@@ -16,11 +16,14 @@ public sealed partial class MainWindow : Window
     private readonly SessionCoordinator _coordinator;
     private readonly IWorkspaceStore _store;
     private readonly WorkspaceCatalog _catalog;
+    private readonly DurableAlertLedger _ledger;
     private readonly Dictionary<Guid, TerminalSessionView> _views = [];
     private readonly Dictionary<Guid, Button> _sidebarButtons = [];
     private readonly Dictionary<Guid, TabViewItem> _tabs = [];
     private IProcessReadinessAdapter _plannerReadiness = new ShellReadinessAdapter();
     private AlertInputCoordinator _alerts;
+    private readonly object _lifecyclePersistenceGate = new();
+    private Task _lifecyclePersistence = Task.CompletedTask;
     private bool _initialized;
     private bool _syncingSelection;
 
@@ -29,10 +32,11 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         _store = new SqliteWorkspaceStore(SqliteWorkspaceStore.ProductionDatabasePath);
         _catalog = new WorkspaceCatalog(_store);
+        _ledger = new DurableAlertLedger(_store);
         _coordinator = new SessionCoordinator(new ConPtyTerminalSessionFactory(), _registry);
         _coordinator.OutputReceived += Coordinator_OutputReceived;
         _coordinator.StateChanged += Coordinator_StateChanged;
-        _coordinator.CompletionAlertReady += Coordinator_CompletionAlertReady;
+        _coordinator.LifecycleTransitioned += Coordinator_LifecycleTransitioned;
         _alerts = new AlertInputCoordinator(_plannerReadiness);
         Activated += MainWindow_Activated;
         Closed += MainWindow_Closed;
@@ -45,11 +49,13 @@ public sealed partial class MainWindow : Window
         {
             var runtimeProfile = string.Equals(Environment.GetEnvironmentVariable("HALFWAY_RUNTIME_LAUNCH"), "codex", StringComparison.OrdinalIgnoreCase) ? LaunchProfile.Codex : LaunchProfile.PowerShell;
             await _catalog.InitializeAsync(GetWorkingDirectory(), runtimeProfile);
+            await _ledger.RecoverAsync();
             foreach (var session in _catalog.Sessions.OrderBy(x => x.Kind).ThenBy(x => x.DisplayOrder))
                 _registry.Register(new AgentSession(session.Id, session.DisplayName, session.Kind, session.ParentSessionId, session.LastStatus));
             BuildWorkspaceUi(); RefreshInformationBar();
             if (_catalog.SelectedPrimary is { } primary) await StartSessionAsync(primary);
             if (_catalog.SelectedSubAgent is { } subAgent) await StartSessionAsync(subAgent);
+            if (_catalog.SelectedPrimary is { } restoredParent) await QueuePendingAlertsAsync(restoredParent);
         }
         catch (Exception exception)
         {
@@ -157,18 +163,76 @@ public sealed partial class MainWindow : Window
         });
     }
 
-    private void Coordinator_CompletionAlertReady(object? sender, CompletionAlert alert)
+    private void Coordinator_LifecycleTransitioned(object? sender, LifecycleTransition transition)
     {
-        if (_catalog.SelectedPrimary?.Id != alert.ParentSessionId) return;
-        _alerts.RequestAlert(alert.Message);
-        DispatcherQueue.TryEnqueue(async () => { if (_catalog.SelectedPrimary is { } parent) await TryDeliverAlertAsync(parent); });
+        lock (_lifecyclePersistenceGate)
+        {
+            _lifecyclePersistence = _lifecyclePersistence.ContinueWith(
+                _ => PersistLifecycleTransitionAsync(transition),
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                TaskScheduler.Default).Unwrap();
+        }
+    }
+
+    private async Task PersistLifecycleTransitionAsync(LifecycleTransition transition)
+    {
+        try
+        {
+            await _ledger.RecordAsync(transition);
+            if (transition.Alert is { } alert)
+            {
+                DispatcherQueue.TryEnqueue(async () =>
+                {
+                    if (_catalog.SelectedPrimary?.Id == alert.ParentSessionId && _catalog.SelectedPrimary is { } parent)
+                    {
+                        _alerts.RequestAlert(alert.EventId, alert.Message);
+                        await TryDeliverAlertAsync(parent);
+                    }
+                });
+            }
+        }
+        catch (Exception exception)
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (_catalog.Sessions.FirstOrDefault(x => x.Id == transition.Session.Id) is { } session)
+                    _views[session.Id].Append($"\n[Unable to persist lifecycle event: {exception.Message}]\n");
+            });
+        }
     }
 
     private async Task TryDeliverAlertAsync(SessionMetadata parent)
     {
-        var alert = _alerts.TakeReadyAlert(); if (alert is null) return;
-        try { await _coordinator.WriteAsync(parent.SessionKey, alert + "\r"); _alerts.CommitAlertDelivery(); }
-        catch { _alerts.ReleaseAlertDelivery(); }
+        var alert = _alerts.TakeReadyAlertReservation(); if (alert is null) return;
+        if (alert.EventId != Guid.Empty && !await _ledger.ReserveAsync(alert.EventId))
+        {
+            _alerts.CommitAlertDelivery();
+            await QueuePendingAlertsAsync(parent);
+            return;
+        }
+        try
+        {
+            await _coordinator.WriteAsync(parent.SessionKey, alert.Message + "\r");
+            if (alert.EventId != Guid.Empty && !await _ledger.CommitAsync(alert.EventId)) throw new InvalidOperationException("Alert delivery could not be committed.");
+            _alerts.CommitAlertDelivery();
+            await QueuePendingAlertsAsync(parent);
+        }
+        catch
+        {
+            if (alert.EventId != Guid.Empty) await _ledger.ReleaseAsync(alert.EventId);
+            _alerts.ReleaseAlertDelivery();
+        }
+    }
+
+    private async Task QueuePendingAlertsAsync(SessionMetadata parent)
+    {
+        foreach (var alert in await _ledger.LoadPendingAsync(parent.Id))
+        {
+            _alerts.RequestAlert(alert.EventId, alert.Message);
+            await TryDeliverAlertAsync(parent);
+            if (_alerts.HasQueuedAlert) break;
+        }
     }
 
     private async void SidebarButton_Click(object sender, RoutedEventArgs e)
@@ -231,6 +295,9 @@ public sealed partial class MainWindow : Window
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
         _coordinator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        Task persistence;
+        lock (_lifecyclePersistenceGate) persistence = _lifecyclePersistence;
+        persistence.GetAwaiter().GetResult();
         _store.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 

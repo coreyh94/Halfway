@@ -8,9 +8,9 @@ public sealed class AlertInputCoordinator
         "[Halfway Alert!] Runtime completed. Continue orchestration.";
 
     private readonly IProcessReadinessAdapter _readiness;
-    private string? _queuedAlert;
+    private AlertInputReservation? _queuedAlert;
     private bool _alertInFlight;
-    private bool _alertDelivered;
+    private readonly HashSet<Guid> _delivered = [];
 
     public AlertInputCoordinator(IProcessReadinessAdapter readiness)
     {
@@ -19,29 +19,39 @@ public sealed class AlertInputCoordinator
 
     public bool HasPartialUserInput { get; private set; }
 
-    public bool HasQueuedAlert => _queuedAlert is not null && !_alertDelivered;
+    public bool HasQueuedAlert => _queuedAlert is not null;
 
-    public bool AlertDelivered => _alertDelivered;
+    public bool AlertDelivered => _delivered.Count > 0;
 
     public void SetUserInput(string input) => HasPartialUserInput = !string.IsNullOrEmpty(input);
 
     public void RequestDemonstrationAlert()
     {
-        RequestAlert(DemonstrationAlert);
+        RequestAlert(Guid.Empty, DemonstrationAlert);
     }
 
     public void RequestAlert(string alert)
     {
+        RequestAlert(Guid.Empty, alert);
+    }
+
+    public void RequestAlert(Guid eventId, string alert)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(alert);
-        if (!_alertDelivered)
+        if (!_delivered.Contains(eventId))
         {
-            _queuedAlert ??= alert;
+            _queuedAlert ??= new AlertInputReservation(eventId, alert);
         }
     }
 
     public string? TakeReadyAlert()
     {
-        if (_queuedAlert is null || _alertDelivered || _alertInFlight || HasPartialUserInput || !_readiness.IsReadyForInput)
+        return TakeReadyAlertReservation()?.Message;
+    }
+
+    public AlertInputReservation? TakeReadyAlertReservation()
+    {
+        if (_queuedAlert is null || _alertInFlight || HasPartialUserInput || !_readiness.IsReadyForInput)
         {
             return null;
         }
@@ -58,7 +68,8 @@ public sealed class AlertInputCoordinator
         }
 
         _alertInFlight = false;
-        _alertDelivered = true;
+        _delivered.Add(_queuedAlert!.EventId);
+        _queuedAlert = null;
     }
 
     public void ReleaseAlertDelivery()
@@ -66,3 +77,5 @@ public sealed class AlertInputCoordinator
         _alertInFlight = false;
     }
 }
+
+public sealed record AlertInputReservation(Guid EventId, string Message);

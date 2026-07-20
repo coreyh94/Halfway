@@ -51,24 +51,27 @@ Halfway.exe
 
 ## 4. Component Responsibilities
 
-The Phase 1 implementation separates four concrete ownership layers:
+The implementation separates five concrete ownership layers:
 
 ```text
-SqliteWorkspaceStore -> durable workspace/session metadata
+SqliteWorkspaceStore -> durable workspace/session metadata, lifecycle events and alert-delivery facts
 WorkspaceCatalog     -> loaded metadata, creation, selection and persisted status
+DurableAlertLedger   -> focused event/delivery operations and restart recovery
 SessionCoordinator   -> live ConPTY ownership, output, input, resize and exit
 MainWindow            -> fixed-layout presentation and user interaction
 ```
 
 `Halfway.Persistence` contains the SQLite store and catalog. `Halfway.Core` contains shared workspace/session metadata, launch-profile values, agent kinds, lifecycle states, and status presentation. Persisted models never own or expose `ITerminalSession`; live terminal ownership remains exclusively in `Halfway.Runtime`.
 
-### Phase 1 persistence and restore
+### Persistence and restore
 
-Schema version 1 stores `Workspaces` and `Sessions`. Workspaces have stable IDs, unique working directories, display names, and selected primary/sub-agent IDs. Sessions have stable IDs and coordinator keys, workspace/parent relationships, launch profiles, display order, last status, and timestamps. Foreign keys are enabled and first-run seeding is transactional.
+Schema version 2 preserves the version 1 `Workspaces` and `Sessions` data and adds `LifecycleEvents` and `AlertDeliveries` in an idempotent transaction. Foreign keys are enabled, and `PRAGMA user_version` advances only after migration succeeds. Lifecycle events contain stable IDs, session/parent identity, the status transition, occurrence time, and eligibility. Delivery records contain only the deterministic message and `Pending`, `Reserved`, or `Delivered` state with reservation, delivery, and update timestamps.
 
-The production database is `%LOCALAPPDATA%\Halfway\halfway.db`. It stores no terminal output, prompts, alerts, secrets, process handles, or process IDs.
+The production database is `%LOCALAPPDATA%\Halfway\halfway.db`. It stores deterministic eligible alert messages but no terminal output, transcripts, prompts, secrets, process handles, or process IDs.
 
-On first run, the catalog creates Planner and Runtime metadata and selects both. On restore, stable IDs and selection are reused. Queued, Running, and Waiting metadata is normalized to Disconnected because no previous process is considered alive. Completed, Failed, and Disconnected remain visible. The selected Planner and sub-agent start as fresh processes; other restored sessions require an explicit Start/Restart. Halfway never reattaches to an old process or resends an alert solely because metadata was restored.
+On first run, the catalog creates Planner and Runtime metadata and selects both. On restore, stable IDs and selection are reused. Queued, Running, and Waiting metadata is normalized to Disconnected because no previous process is considered alive. Completed, Failed, and Disconnected remain visible. The selected Planner and sub-agent start as fresh processes; other restored sessions require an explicit Start/Restart. Halfway never reattaches to an old process or creates an event solely because metadata was restored.
+
+At startup, stale `Reserved` deliveries return to `Pending`. Pending alerts remain eligible but are not sent until the matching parent Planner is newly running, its readiness adapter reports safe input, and no partial input exists. Reservation is an atomic compare-and-update; a successful terminal write is followed by a `Delivered` commit, while failure or cancellation releases the record to `Pending`. Delivered records never become eligible again. This slice delivers alerts individually; batching remains future work.
 
 ### WorkspaceManager
 

@@ -19,6 +19,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
     public event EventHandler<SessionOutput>? OutputReceived;
     public event EventHandler<SessionStateChanged>? StateChanged;
     public event EventHandler<CompletionAlert>? CompletionAlertReady;
+    public event EventHandler<LifecycleTransition>? LifecycleTransitioned;
 
     public ManagedSession Get(string key) => GetState(key).Descriptor;
 
@@ -189,6 +190,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
     {
         var transition = _registry.Transition(state.Descriptor.Id, status);
         state.Descriptor = state.Descriptor with { Status = transition.Session.Status };
+        if (transition.Changed) LifecycleTransitioned?.Invoke(this, transition);
         StateChanged?.Invoke(this, new SessionStateChanged(state.Descriptor.Key, state.Descriptor.Status));
         return transition;
     }

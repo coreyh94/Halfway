@@ -7,5 +7,4 @@ public sealed record LifecycleEvent(
     AgentStatus PreviousStatus,
     AgentStatus NewStatus,
     DateTimeOffset OccurredAt,
-    bool AlertEligible,
-    bool AlertDelivered = false);
+    bool AlertEligible);

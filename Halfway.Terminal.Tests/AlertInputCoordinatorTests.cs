@@ -81,4 +81,17 @@ public sealed class AlertInputCoordinatorTests
 
         Assert.Throws<InvalidOperationException>(() => coordinator.CommitAlertDelivery());
     }
+
+    [Fact]
+    public void DistinctDurableEventsWithTheSameMessageCanEachBeDelivered()
+    {
+        var readiness = new ShellReadinessAdapter(); readiness.ObserveOutput("ready"); var coordinator = new AlertInputCoordinator(readiness);
+        var firstId = Guid.NewGuid(); var secondId = Guid.NewGuid();
+        coordinator.RequestAlert(firstId, AlertInputCoordinator.DemonstrationAlert);
+        Assert.Equal(firstId, coordinator.TakeReadyAlertReservation()!.EventId); coordinator.CommitAlertDelivery();
+        coordinator.RequestAlert(secondId, AlertInputCoordinator.DemonstrationAlert);
+        Assert.Equal(secondId, coordinator.TakeReadyAlertReservation()!.EventId); coordinator.CommitAlertDelivery();
+        coordinator.RequestAlert(firstId, AlertInputCoordinator.DemonstrationAlert);
+        Assert.Null(coordinator.TakeReadyAlertReservation());
+    }
 }

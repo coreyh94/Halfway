@@ -59,17 +59,6 @@ public sealed class SessionRegistry
         return new LifecycleTransition(updated, lifecycleEvent, alert);
     }
 
-    public void MarkAlertDelivered(Guid eventId)
-    {
-        var index = _events.FindIndex(item => item.Id == eventId);
-        if (index < 0)
-        {
-            throw new KeyNotFoundException($"Lifecycle event {eventId} is not registered.");
-        }
-
-        _events[index] = _events[index] with { AlertDelivered = true };
-    }
-
     public IReadOnlyDictionary<AgentStatus, int> CountByStatus() =>
         Enum.GetValues<AgentStatus>().ToDictionary(status => status, status => _sessions.Values.Count(session => session.Status == status));
 }
