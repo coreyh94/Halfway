@@ -108,7 +108,7 @@ public sealed partial class MainWindow : Window, IWorkspaceSwitchAdapter
 
     private void AddSessionUi(SessionMetadata session)
     {
-        var button = new Button { Tag = session.Id, HorizontalContentAlignment = HorizontalAlignment.Stretch, Background = ThemeBrush("TransparentBrush"), Foreground = ThemeBrush("SidebarTextBrush"), Padding = new Thickness(10,9,10,9) };
+        var button = new Button { Tag = session.Id, Style = AppStyle("SidebarRowButtonStyle"), Background = ThemeBrush("TransparentBrush") };
         button.Click += SidebarButton_Click; _sidebarButtons[session.Id] = button;
         (session.Kind == AgentKind.Primary ? PrimaryList : SubAgentList).Children.Add(button);
         var view = new TerminalSessionView(session); WireView(view, _activation.Current); _views[session.Id] = view;
@@ -478,9 +478,40 @@ public sealed partial class MainWindow : Window, IWorkspaceSwitchAdapter
     private void UpdateSessionUi(SessionMetadata session)
     {
         _views[session.Id].SetStatus(session.LastStatus);
-        var unread = _attention.IsUnread(session.Id) ? "  •" : string.Empty;
-        _sidebarButtons[session.Id].Content = new TextBlock { Text = $"{StatusPresentation.Glyph(session.LastStatus)}  {session.DisplayName}{unread}" };
-        if (_tabs.TryGetValue(session.Id, out var tab)) tab.Header = $"{session.DisplayName} {StatusPresentation.Glyph(session.LastStatus)}{unread}";
+        _sidebarButtons[session.Id].Content = BuildSidebarRow(session);
+        if (_tabs.TryGetValue(session.Id, out var tab)) tab.Header = BuildTabHeader(session);
+    }
+
+    private UIElement BuildSidebarRow(SessionMetadata session)
+    {
+        var statusBrush = ThemeBrush(StatusPresentation.ColorKey(session.LastStatus));
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var glyph = new TextBlock { Text = StatusPresentation.Glyph(session.LastStatus), Foreground = statusBrush, FontSize = 13, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+        Grid.SetColumn(glyph, 0);
+        var name = new TextBlock { Text = session.DisplayName, Foreground = ThemeBrush("SidebarTextBrush"), FontSize = 13, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+        Grid.SetColumn(name, 1);
+        grid.Children.Add(glyph);
+        grid.Children.Add(name);
+        if (_attention.IsUnread(session.Id))
+        {
+            var unread = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 7, Height = 7, Fill = ThemeBrush("AccentBrush"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
+            Grid.SetColumn(unread, 2);
+            grid.Children.Add(unread);
+        }
+        return grid;
+    }
+
+    private UIElement BuildTabHeader(SessionMetadata session)
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        panel.Children.Add(new TextBlock { Text = session.DisplayName, VerticalAlignment = VerticalAlignment.Center });
+        panel.Children.Add(new TextBlock { Text = StatusPresentation.Glyph(session.LastStatus), Foreground = ThemeBrush(StatusPresentation.ColorKey(session.LastStatus)), VerticalAlignment = VerticalAlignment.Center });
+        if (_attention.IsUnread(session.Id))
+            panel.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 6, Height = 6, Fill = ThemeBrush("AccentBrush"), VerticalAlignment = VerticalAlignment.Center });
+        return panel;
     }
 
     private void RefreshInformationBar()
@@ -642,6 +673,8 @@ public sealed partial class MainWindow : Window, IWorkspaceSwitchAdapter
     }
 
     private static SolidColorBrush ThemeBrush(string key) => (SolidColorBrush)Application.Current.Resources[key];
+
+    private static Style AppStyle(string key) => (Style)Application.Current.Resources[key];
 
     private async void ExportDiagnostics_Click(object sender, RoutedEventArgs e)
     {

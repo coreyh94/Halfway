@@ -132,6 +132,16 @@ Example:
 - Strong terminal readability.
 - Light and dark themes may follow the Windows setting.
 
+### 9.1 Cohesive design system
+
+The interface is styled as one system rather than per control. Semantic colour roles — surfaces, text hierarchy, borders, status, selection, accent, search and splitter — are defined once as theme-aware resources in `App.xaml` and consumed everywhere, including dynamically created sidebar rows and tabs, so the light and dark palettes stay consistent and update live with the Windows setting without stale colours.
+
+- Status uses a single colour vocabulary shared by sidebar rows, sub-agent tabs and terminal headers. Running, Waiting, Completed and Failed each map to one semantic brush; Queued and Disconnected read as muted. The mapping is centralised (`StatusPresentation.ColorKey`) so every surface tints a status identically.
+- The information bar groups the Running, Waiting and Completed counts as compact colour-dotted chips, separated from the workspace selector and the repository/branch/model context by thin rules. Connection status and Export diagnostics stay on the trailing edge.
+- Each terminal header pairs the session identity with a status pill (colour-coded dot and label). The primary Start/Restart action is an accent button; Stop and the launch/utility actions are quieter secondary buttons, so there is one clear primary action per terminal.
+- Panel splitters present a slim rule that strengthens on hover for discoverability without added visual weight; double-clicking still restores the default width.
+- Selected sidebar rows are filled and unavailable workspaces remain visibly disabled in the selector; hover, pressed, focus and disabled states are provided for interactive controls.
+
 ## 10. Deliberately Excluded UI
 
 - File explorer.
