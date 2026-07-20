@@ -72,6 +72,33 @@ public sealed class SessionCoordinatorTests
     }
 
     [Fact]
+    public async Task Failed_runtime_launch_releases_ownership_and_can_be_retried()
+    {
+        var factory = new FakeFactory { StartException = new InvalidOperationException("launch failed") };
+        var registry = new SessionRegistry();
+        var plannerId = Guid.NewGuid();
+        registry.Register(new AgentSession(plannerId, "Planner", AgentKind.Primary, null));
+        var coordinator = new SessionCoordinator(factory, registry);
+        var runtimeId = Guid.NewGuid();
+        var states = new List<SessionStateChanged>();
+        coordinator.StateChanged += (_, state) => states.Add(state);
+        var descriptor = Descriptor("runtime", runtimeId, "Runtime", plannerId);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.StartAsync(descriptor, Options()));
+
+        Assert.Equal(AgentStatus.Failed, registry.Get(runtimeId).Status);
+        Assert.Equal([AgentStatus.Queued, AgentStatus.Failed], states.Select(item => item.Status));
+        Assert.Throws<KeyNotFoundException>(() => coordinator.Get("runtime"));
+
+        factory.StartException = null;
+        await coordinator.StartAsync(descriptor, Options());
+
+        Assert.Equal(AgentStatus.Running, coordinator.Get("runtime").Status);
+        Assert.Equal([AgentStatus.Queued, AgentStatus.Failed, AgentStatus.Queued, AgentStatus.Running], states.Select(item => item.Status));
+        await coordinator.DisposeAsync();
+    }
+
+    [Fact]
     public async Task Successful_runtime_exit_completes_and_alerts_once()
     {
         var factory = new FakeFactory();
@@ -122,8 +149,12 @@ public sealed class SessionCoordinatorTests
     {
         public List<FakeSession> Sessions { get; } = [];
         public List<TerminalLaunchOptions> Options { get; } = [];
+        public Exception? StartException { get; set; }
         public Task<ITerminalSession> StartAsync(TerminalLaunchOptions options, CancellationToken cancellationToken = default)
-        { Options.Add(options); var session = new FakeSession(Sessions.Count + 1); Sessions.Add(session); return Task.FromResult<ITerminalSession>(session); }
+        {
+            if (StartException is not null) return Task.FromException<ITerminalSession>(StartException);
+            Options.Add(options); var session = new FakeSession(Sessions.Count + 1); Sessions.Add(session); return Task.FromResult<ITerminalSession>(session);
+        }
     }
 
     private sealed class RecordingLaunchAdapter : IRuntimeLaunchAdapter

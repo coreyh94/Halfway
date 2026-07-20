@@ -52,11 +52,13 @@ public sealed class SessionCoordinator : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
+            await ReleaseFailedStartAsync(state).ConfigureAwait(false);
             Transition(state, AgentStatus.Disconnected);
             throw;
         }
         catch
         {
+            await ReleaseFailedStartAsync(state).ConfigureAwait(false);
             Transition(state, AgentStatus.Failed);
             throw;
         }
@@ -115,6 +117,26 @@ public sealed class SessionCoordinator : IAsyncDisposable
         _sessions.TryGetValue(key, out var state)
             ? state
             : throw new KeyNotFoundException($"Session '{key}' is not owned by this coordinator.");
+
+    private async Task ReleaseFailedStartAsync(ManagedSessionState state)
+    {
+        var terminal = Interlocked.Exchange(ref state.Terminal, null);
+        if (terminal is not null)
+        {
+            terminal.OutputReceived -= state.OutputHandler;
+            terminal.Exited -= state.ExitHandler;
+            try
+            {
+                await terminal.DisposeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // Preserve the original launch failure while still releasing ownership.
+            }
+        }
+
+        _sessions.Remove(state.Descriptor.Key);
+    }
 
     private void HandleOutput(ManagedSessionState state, string output)
     {
