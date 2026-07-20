@@ -46,9 +46,11 @@ dotnet build Halfway.App\Halfway.App.csproj --configuration Debug -p:Platform=x6
 dotnet run --project Halfway.App\Halfway.App.csproj --configuration Debug -p:Platform=x64
 ```
 
-Halfway starts a Planner PowerShell session and an independent Runtime PowerShell sub-agent session through ConPTY. Runtime starts in the configured working directory, streams into the Runtime tab, accepts line input, and resizes with its panel. Stopping either session leaves the other session running. Use the **Codex** button to replace Planner with the installed Codex CLI. The working directory defaults to the directory from which Halfway is launched; set `HALFWAY_WORKING_DIRECTORY` to an existing directory to override it.
+Halfway starts a Planner PowerShell session and an independent Runtime sub-agent session through ConPTY. Runtime uses PowerShell by default, or Codex when `HALFWAY_RUNTIME_LAUNCH=codex` is set. Runtime starts in the configured working directory, streams into the Runtime tab, accepts line input, and resizes with its panel. Stopping either session leaves the other session running. Use the **Codex** button to replace Planner with the installed Codex CLI. The working directory defaults to the directory from which Halfway is launched; set `HALFWAY_WORKING_DIRECTORY` to an existing directory to override it.
 
 The **Inject demo alert** button submits exactly one deterministic alert. If user input is partially typed, the alert remains queued until that input is submitted.
+
+Runtime launches PowerShell by default. Set `HALFWAY_RUNTIME_LAUNCH=codex` to launch the installed Codex CLI instead; `powershell` explicitly selects the default.
 
 ## Current spike limitations
 

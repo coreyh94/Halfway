@@ -27,4 +27,23 @@ public sealed class RuntimeLaunchAdapterTests
         Assert.Throws<OperationCanceledException>(() => new PowerShellRuntimeLaunchAdapter().CreateOptions(
             new RuntimeLaunchContext("missing", new TerminalSize(80, 24)), cancellation.Token));
     }
+
+    [Theory]
+    [InlineData(null, typeof(PowerShellRuntimeLaunchAdapter))]
+    [InlineData("", typeof(PowerShellRuntimeLaunchAdapter))]
+    [InlineData("powershell", typeof(PowerShellRuntimeLaunchAdapter))]
+    [InlineData(" CODEX ", typeof(CodexRuntimeLaunchAdapter))]
+    public void Launch_profile_selection_is_explicit(string? profile, Type expectedType)
+    {
+        Assert.IsType(expectedType, RuntimeLaunchAdapterSelection.Create(profile));
+    }
+
+    [Fact]
+    public void Unknown_launch_profile_fails_before_session_start()
+    {
+        var exception = Assert.Throws<ArgumentException>(() => RuntimeLaunchAdapterSelection.Create("wsl"));
+
+        Assert.Contains("powershell", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("codex", exception.Message, StringComparison.Ordinal);
+    }
 }
