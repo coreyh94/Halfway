@@ -96,6 +96,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
                 Transition(state, AgentStatus.Disconnected);
             }
 
+            _sessions.Remove(key);
             return;
         }
 
@@ -111,6 +112,8 @@ public sealed class SessionCoordinator : IAsyncDisposable
             {
                 Transition(state, AgentStatus.Disconnected);
             }
+
+            _sessions.Remove(key);
         }
     }
 

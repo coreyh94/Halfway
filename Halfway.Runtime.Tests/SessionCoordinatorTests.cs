@@ -41,6 +41,12 @@ public sealed class SessionCoordinatorTests
         Assert.Equal(AgentStatus.Disconnected, Assert.Single(states, item => item.Status == AgentStatus.Disconnected).Status);
         Assert.Empty(alerts);
         Assert.True(factory.Sessions[0].IsDisposed);
+        Assert.Throws<KeyNotFoundException>(() => coordinator.Get("runtime"));
+
+        await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options());
+
+        Assert.Equal(AgentStatus.Running, registry.Get(runtimeId).Status);
+        await coordinator.DisposeAsync();
     }
 
     [Fact]
