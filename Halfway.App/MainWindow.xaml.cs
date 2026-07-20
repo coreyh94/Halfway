@@ -24,6 +24,8 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<Guid, Button> _sidebarButtons = [];
     private readonly Dictionary<Guid, TabViewItem> _tabs = [];
     private readonly SessionAttentionTracker _attention = new();
+    private readonly FailureNotificationPolicy _failureNotifications = new();
+    private readonly WindowsFailureNotifier _windowsNotifications;
     private IProcessReadinessAdapter _plannerReadiness = new ShellReadinessAdapter();
     private AlertInputCoordinator _alerts;
     private readonly object _lifecyclePersistenceGate = new();
@@ -33,6 +35,7 @@ public sealed partial class MainWindow : Window
     private bool _initialized;
     private bool _syncingSelection;
     private Guid? _focusedSessionId;
+    private bool _isWindowActive;
 
     public MainWindow()
     {
@@ -45,12 +48,14 @@ public sealed partial class MainWindow : Window
         _coordinator.StateChanged += Coordinator_StateChanged;
         _coordinator.LifecycleTransitioned += Coordinator_LifecycleTransitioned;
         _alerts = new AlertInputCoordinator(_plannerReadiness);
+        _windowsNotifications = new WindowsFailureNotifier(() => DispatcherQueue.TryEnqueue(Activate));
         Activated += MainWindow_Activated;
         Closed += MainWindow_Closed;
     }
 
     private async void MainWindow_Activated(object sender, WindowActivatedEventArgs args)
     {
+        _isWindowActive = args.WindowActivationState != WindowActivationState.Deactivated;
         if (_initialized) return; _initialized = true;
         try
         {
@@ -185,6 +190,11 @@ public sealed partial class MainWindow : Window
 
     private void Coordinator_LifecycleTransitioned(object? sender, LifecycleTransition transition)
     {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            var notification = _failureNotifications.Evaluate(transition, _isWindowActive, _focusedSessionId);
+            if (notification is not null) _windowsNotifications.Show(notification);
+        });
         lock (_lifecyclePersistenceGate)
         {
             _lifecyclePersistence = _lifecyclePersistence.ContinueWith(
@@ -412,6 +422,7 @@ public sealed partial class MainWindow : Window
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
         _batchDelay?.Cancel(); _batchDelay?.Dispose();
+        _windowsNotifications.Dispose();
         _coordinator.DisposeAsync().AsTask().GetAwaiter().GetResult();
         Task persistence;
         lock (_lifecyclePersistenceGate) persistence = _lifecyclePersistence;

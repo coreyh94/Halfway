@@ -71,6 +71,8 @@ The fixed workspace grid exposes two native drag boundaries for sidebar/main and
 
 Application-level light and dark theme dictionaries define semantic colors for workspace surfaces, text hierarchy, status, selection, errors, splitters, and search highlights. XAML and dynamically created presentation elements consume shared theme brushes, allowing WinUI to follow the Windows application theme at runtime. Theme choice is presentation-only: it is not stored in SQLite and does not affect terminal ownership, input readiness, lifecycle events, or alert delivery.
 
+`FailureNotificationPolicy` converts each real `Failed` lifecycle event into at most one deterministic presentation fact when the app is inactive or a different terminal is focused. `WindowsFailureNotifier` registers the unpackaged app with the Windows App SDK notification manager, displays the short fact, and activates the window when invoked. Registration and delivery failures are contained inside the adapter. Notifications are not terminal messages, are not persisted, and do not participate in lifecycle-event or alert-delivery state.
+
 `Halfway.Persistence` contains the SQLite store and catalog. `Halfway.Core` contains shared workspace/session metadata, launch-profile values, agent kinds, lifecycle states, and status presentation. Persisted models never own or expose `ITerminalSession`; live terminal ownership remains exclusively in `Halfway.Runtime`.
 
 ### Persistence and restore

@@ -41,7 +41,7 @@ Phase 1 restores durable workspace/session metadata while always starting newly 
 
 Phase 2 persists eligible lifecycle events, atomically reserves delivery, recovers stale reservations, retries pending alerts after restart, and never requeues delivered alerts. Same-parent completions use a fixed event-driven batching window with atomic delivery state for every member. Readiness-driven tracking distinguishes Running from Waiting while retaining process-driven completion, failure, and disconnection. Schema version 3 adds explicit same-workspace parent-child registration and uses it for live lifecycle and alert routing. Terminal transcripts and prompts remain unpersisted.
 
-## Phase 3 — Usability
+## Phase 3 — Usability ✓
 
 - [x] Keyboard navigation.
 - [x] Terminal search.
@@ -49,7 +49,9 @@ Phase 2 persists eligible lifecycle events, atomically reserves delivery, recove
 - [x] Unread indicators.
 - [x] Resizable panels.
 - [x] Light and dark theme.
-- Windows notifications for failures where useful.
+- [x] Windows notifications for failures where useful.
+
+Phase 3 adds deterministic keyboard navigation, bounded in-memory terminal search, last-workspace restore, transient unread indicators, constrained panel resizing, system light/dark palettes, and best-effort Windows notifications for background failures. None of these usability features persist terminal content or manufacture lifecycle events or terminal messages.
 
 ## Phase 4 — Reliability
 
