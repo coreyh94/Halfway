@@ -30,8 +30,7 @@ public sealed partial class MainWindow : Window
     private readonly DiagnosticExporter _diagnosticExporter = new();
     private IProcessReadinessAdapter _plannerReadiness = RuntimeReadinessAdapterSelection.Create(RuntimeLaunchProfile.PowerShell);
     private AlertInputCoordinator _alerts;
-    private readonly object _lifecyclePersistenceGate = new();
-    private Task _lifecyclePersistence = Task.CompletedTask;
+    private readonly OrderlyShutdownPersistence _shutdownPersistence = new();
     private DurableAlertBatch? _currentBatch;
     private CancellationTokenSource? _batchDelay;
     private bool _initialized;
@@ -126,6 +125,8 @@ public sealed partial class MainWindow : Window
 
     private async Task StartSessionAsync(SessionMetadata metadata)
     {
+        metadata = _catalog.Sessions.Single(x => x.Id == metadata.Id);
+        _views[metadata.Id].UpdateMetadata(metadata);
         var view = _views[metadata.Id]; view.ClearOutput();
         var runtimeProfile = metadata.LaunchProfile == LaunchProfile.Codex ? RuntimeLaunchProfile.Codex : RuntimeLaunchProfile.PowerShell;
         var readiness = RuntimeReadinessAdapterSelection.Create(runtimeProfile);
@@ -174,7 +175,9 @@ public sealed partial class MainWindow : Window
     {
         if (_registry.Get(metadata.Id).Status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting)
             await StopSessionAsync(metadata);
-        await StartSessionAsync(metadata with { LaunchProfile = profile });
+        var updated = await _catalog.UpdateLaunchProfileAsync(metadata.Id, profile);
+        _views[metadata.Id].UpdateMetadata(updated);
+        await StartSessionAsync(updated);
     }
 
     private void Coordinator_OutputReceived(object? sender, SessionOutput output)
@@ -191,11 +194,15 @@ public sealed partial class MainWindow : Window
     private void Coordinator_StateChanged(object? sender, SessionStateChanged state)
     {
         var metadata = _catalog.Sessions.FirstOrDefault(x => x.SessionKey == state.Key); if (metadata is null) return;
-        DispatcherQueue.TryEnqueue(async () =>
+        _shutdownPersistence.Enqueue(async () =>
         {
-            try { await _catalog.UpdateStatusAsync(metadata.Id, state.Status); UpdateSessionUi(_catalog.Sessions.Single(x => x.Id == metadata.Id)); RefreshInformationBar(); }
-            catch (Exception exception) { _views[metadata.Id].Append($"\n[Unable to persist status: {exception.Message}]\n"); }
-        });
+            await _catalog.UpdateStatusAsync(metadata.Id, state.Status);
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                UpdateSessionUi(_catalog.Sessions.Single(x => x.Id == metadata.Id));
+                RefreshInformationBar();
+            });
+        }, exception => DispatcherQueue.TryEnqueue(() => _views[metadata.Id].Append($"\n[Unable to persist status: {exception.Message}]\n")));
     }
 
     private void Coordinator_LifecycleTransitioned(object? sender, LifecycleTransition transition)
@@ -207,38 +214,26 @@ public sealed partial class MainWindow : Window
             var notification = _failureNotifications.Evaluate(transition, _isWindowActive, _focusedSessionId);
             if (notification is not null) _windowsNotifications.Show(notification);
         });
-        lock (_lifecyclePersistenceGate)
-        {
-            _lifecyclePersistence = _lifecyclePersistence.ContinueWith(
-                _ => PersistLifecycleTransitionAsync(transition),
-                CancellationToken.None,
-                TaskContinuationOptions.None,
-                TaskScheduler.Default).Unwrap();
-        }
+        _shutdownPersistence.Enqueue(
+            () => PersistLifecycleTransitionAsync(transition),
+            exception => DispatcherQueue.TryEnqueue(() =>
+            {
+                if (_catalog.Sessions.FirstOrDefault(x => x.Id == transition.Session.Id) is { } session)
+                    _views[session.Id].Append($"\n[Unable to persist lifecycle event: {exception.Message}]\n");
+            }));
     }
 
     private async Task PersistLifecycleTransitionAsync(LifecycleTransition transition)
     {
-        try
-        {
-            await _ledger.RecordAsync(transition);
-            if (transition.Alert is { } alert)
-            {
-                DispatcherQueue.TryEnqueue(async () =>
-                {
-                    if (_catalog.SelectedPrimary?.Id == alert.ParentSessionId && _catalog.SelectedPrimary is { } parent)
-                    {
-                        SchedulePendingAlerts(parent);
-                    }
-                });
-            }
-        }
-        catch (Exception exception)
+        await _ledger.RecordAsync(transition);
+        if (transition.Alert is { } alert)
         {
             DispatcherQueue.TryEnqueue(() =>
             {
-                if (_catalog.Sessions.FirstOrDefault(x => x.Id == transition.Session.Id) is { } session)
-                    _views[session.Id].Append($"\n[Unable to persist lifecycle event: {exception.Message}]\n");
+                if (_catalog.SelectedPrimary?.Id == alert.ParentSessionId && _catalog.SelectedPrimary is { } parent)
+                {
+                    SchedulePendingAlerts(parent);
+                }
             });
         }
     }
@@ -459,16 +454,24 @@ public sealed partial class MainWindow : Window
 
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
-        _diagnostics.Record("application", "shutdown", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["outcome"] = "orderly" });
         _batchDelay?.Cancel(); _batchDelay?.Dispose();
         _windowsNotifications.Dispose();
-        _coordinator.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        Task persistence;
-        lock (_lifecyclePersistenceGate) persistence = _lifecyclePersistence;
-        persistence.GetAwaiter().GetResult();
-        if (_applicationRun is { } run)
-            _store.CompleteApplicationRunAsync(run.CurrentRun.Id, DateTimeOffset.UtcNow).GetAwaiter().GetResult();
-        _store.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        try
+        {
+            _shutdownPersistence.CompleteAsync(
+                () => _coordinator.DisposeAsync(),
+                async () =>
+                {
+                    if (_applicationRun is { } run && !await _store.CompleteApplicationRunAsync(run.CurrentRun.Id, DateTimeOffset.UtcNow))
+                        throw new InvalidOperationException("The application run could not be marked clean.");
+                    _diagnostics.Record("application", "shutdown", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["outcome"] = "orderly" });
+                },
+                () => _store.DisposeAsync()).GetAwaiter().GetResult();
+        }
+        catch (Exception exception)
+        {
+            RecordFailure("application", "shutdown-failed", exception);
+        }
     }
 
     private static string ReadBranch(string path)

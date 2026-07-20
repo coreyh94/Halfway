@@ -74,6 +74,17 @@ public sealed class WorkspaceCatalog
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
+    public async Task<SessionMetadata> UpdateLaunchProfileAsync(Guid id, LaunchProfile profile, CancellationToken cancellationToken = default)
+    {
+        var index = _sessions.FindIndex(x => x.Id == id);
+        if (index < 0) throw new KeyNotFoundException($"Session {id} is not in the catalog.");
+        var updated = _sessions[index] with { LaunchProfile = profile, UpdatedAtUtc = DateTimeOffset.UtcNow };
+        await _store.UpdateSessionAsync(updated, cancellationToken);
+        _sessions[index] = updated;
+        Changed?.Invoke(this, EventArgs.Empty);
+        return updated;
+    }
+
     private async Task SelectAsync(Guid id, AgentKind kind, CancellationToken token)
     {
         if (!_sessions.Any(x => x.Id == id && x.Kind == kind)) throw new ArgumentException("Session is not a selectable member of this workspace.", nameof(id));

@@ -16,7 +16,7 @@ public sealed partial class TerminalSessionView : UserControl
     private IReadOnlyList<int> _searchMatches = [];
     private int _currentSearchMatch = -1;
     public TerminalSessionView(SessionMetadata metadata) { InitializeComponent(); Metadata = metadata; TitleText.Text = metadata.DisplayName; if(metadata.Kind==AgentKind.Primary){PowerShellButton.Visibility=Visibility.Visible;CodexButton.Visibility=Visibility.Visible;DemoAlertButton.Visibility=Visibility.Visible;} SetStatus(metadata.LastStatus); }
-    public SessionMetadata Metadata { get; }
+    public SessionMetadata Metadata { get; private set; }
     public string PartialInput => InputText.Text;
     public bool IsSearchOpen => SearchPanel.Visibility == Visibility.Visible;
     public event EventHandler<string>? InputSubmitted;
@@ -28,6 +28,7 @@ public sealed partial class TerminalSessionView : UserControl
     public event EventHandler? DemoAlertRequested;
     public event EventHandler<TerminalSize>? ResizeRequested;
     public void SetStatus(AgentStatus status) { StatusText.Text=status.ToString().ToUpperInvariant();StatusText.Foreground=ThemeBrush(status switch { AgentStatus.Running=>"RunningBrush",AgentStatus.Waiting=>"WaitingBrush",AgentStatus.Completed=>"CompletedBrush",AgentStatus.Failed=>"ErrorBrush",_=>"MutedTextBrush" });var active=status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting; StartButton.IsEnabled=!active; StartButton.Content=status == AgentStatus.Disconnected ? "Restart" : "Start"; StopButton.IsEnabled=active; InputText.IsReadOnly=status is not (AgentStatus.Running or AgentStatus.Waiting); }
+    public void UpdateMetadata(SessionMetadata metadata) { if(metadata.Id!=Metadata.Id)throw new ArgumentException("Session identity cannot change.",nameof(metadata));Metadata=metadata;TitleText.Text=metadata.DisplayName;SetStatus(metadata.LastStatus); }
     public void Append(string output) { var plain=Regex.Replace(output,"\\x1B(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])",string.Empty);var combined=OutputText.Text+plain;OutputText.Text=combined.Length<=MaximumOutputCharacters?combined:combined[^MaximumOutputCharacters..];if(IsSearchOpen)RefreshSearch();else{OutputScroll.UpdateLayout();OutputScroll.ChangeView(null,OutputScroll.ScrollableHeight,null,true);} }
     public void ClearOutput() { OutputText.Text=string.Empty; RefreshSearch(); }
     public void FocusInput()=>InputText.Focus(FocusState.Programmatic);

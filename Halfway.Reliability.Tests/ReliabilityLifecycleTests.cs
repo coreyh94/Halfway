@@ -13,6 +13,69 @@ public sealed class ReliabilityLifecycleTests : IAsyncLifetime
     private string Database => Path.Combine(_directory, "halfway.db");
 
     [Fact]
+    public async Task OrderlyShutdownCannotMarkCleanOrDisposeBeforeFinalPersistence()
+    {
+        var persistence = new OrderlyShutdownPersistence();
+        var statusStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseStatus = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var order = new List<string>();
+
+        var shutdown = persistence.CompleteAsync(
+            () =>
+            {
+                order.Add("stopped");
+                persistence.Enqueue(async () =>
+                {
+                    statusStarted.TrySetResult();
+                    await releaseStatus.Task;
+                    order.Add("status-disconnected");
+                });
+                persistence.Enqueue(() =>
+                {
+                    order.Add("lifecycle-disconnected");
+                    return Task.CompletedTask;
+                });
+                return ValueTask.CompletedTask;
+            },
+            () =>
+            {
+                order.Add("clean");
+                return Task.CompletedTask;
+            },
+            () =>
+            {
+                order.Add("disposed");
+                return ValueTask.CompletedTask;
+            });
+
+        await statusStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(["stopped"], order);
+        Assert.False(shutdown.IsCompleted);
+
+        releaseStatus.TrySetResult();
+        await shutdown;
+
+        Assert.Equal(["stopped", "status-disconnected", "lifecycle-disconnected", "clean", "disposed"], order);
+    }
+
+    [Fact]
+    public async Task FailedFinalPersistenceLeavesRunUncleanButStillDisposesStore()
+    {
+        var persistence = new OrderlyShutdownPersistence();
+        var markedClean = false;
+        var disposed = false;
+        persistence.Enqueue(() => Task.FromException(new IOException("status failed")));
+
+        await Assert.ThrowsAsync<AggregateException>(() => persistence.CompleteAsync(
+            () => ValueTask.CompletedTask,
+            () => { markedClean = true; return Task.CompletedTask; },
+            () => { disposed = true; return ValueTask.CompletedTask; }));
+
+        Assert.False(markedClean);
+        Assert.True(disposed);
+    }
+
+    [Fact]
     public async Task ReadinessAndUserInputFollowCompleteRunningWaitingSequences()
     {
         var (coordinator, factory, _, runtime) = Coordinator();

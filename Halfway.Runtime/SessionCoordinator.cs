@@ -198,9 +198,22 @@ public sealed class SessionCoordinator : IAsyncDisposable
         }
 
         _disposed = true;
+        var failures = new List<Exception>();
         foreach (var key in _sessions.Keys.ToArray())
         {
-            await StopAsync(key).ConfigureAwait(false);
+            try
+            {
+                await StopAsync(key).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+            }
+        }
+
+        if (failures.Count > 0)
+        {
+            throw new AggregateException("One or more terminal sessions failed to stop cleanly.", failures);
         }
     }
 

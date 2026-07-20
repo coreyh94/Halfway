@@ -63,11 +63,10 @@ internal sealed class ConPtyTerminalSession : ITerminalSession
             {
                 _outputReceived += value;
                 backlog = _outputBacklog.ToString();
-            }
-
-            if (backlog.Length > 0)
-            {
-                value?.Invoke(this, backlog);
+                if (backlog.Length > 0 && Volatile.Read(ref _disposed) == 0)
+                {
+                    value?.Invoke(this, backlog);
+                }
             }
         }
         remove
@@ -275,6 +274,7 @@ internal sealed class ConPtyTerminalSession : ITerminalSession
     private void ReadOutput()
     {
         var buffer = new byte[4096];
+        var decoder = new Utf8OutputDecoder();
         try
         {
             while (!_readCancellation.IsCancellationRequested)
@@ -282,22 +282,12 @@ internal sealed class ConPtyTerminalSession : ITerminalSession
                 var count = _output.Read(buffer, 0, buffer.Length);
                 if (count == 0)
                 {
+                    EmitOutput(decoder.Decode([], flush: true));
                     return;
                 }
 
-                var text = Encoding.UTF8.GetString(buffer, 0, count);
-                EventHandler<string>? handler;
-                lock (_outputGate)
-                {
-                    if (_outputBacklog.Length < 64 * 1024)
-                    {
-                        _outputBacklog.Append(text);
-                    }
-
-                    handler = _outputReceived;
-                }
-
-                handler?.Invoke(this, text);
+                if (_readCancellation.IsCancellationRequested || Volatile.Read(ref _disposed) != 0) return;
+                EmitOutput(decoder.Decode(buffer.AsSpan(0, count)));
             }
         }
         catch (ObjectDisposedException) when (_readCancellation.IsCancellationRequested)
@@ -305,6 +295,21 @@ internal sealed class ConPtyTerminalSession : ITerminalSession
         }
         catch (IOException) when (_readCancellation.IsCancellationRequested)
         {
+        }
+    }
+
+    private void EmitOutput(string text)
+    {
+        if (text.Length == 0) return;
+        lock (_outputGate)
+        {
+            if (_readCancellation.IsCancellationRequested || Volatile.Read(ref _disposed) != 0) return;
+            if (_outputBacklog.Length < 64 * 1024)
+            {
+                _outputBacklog.Append(text);
+            }
+
+            _outputReceived?.Invoke(this, text);
         }
     }
 

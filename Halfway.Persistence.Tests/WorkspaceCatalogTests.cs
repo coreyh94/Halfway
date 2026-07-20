@@ -28,6 +28,27 @@ public sealed class WorkspaceCatalogTests
     }
 
     [Fact]
+    public async Task PlannerLaunchProfileSurvivesSameProcessRestartAndFreshCatalogRestore()
+    {
+        await using var fixture = new CatalogFixture();
+        var catalog = await fixture.CreateAsync();
+        var plannerId = catalog.SelectedPrimary!.Id;
+
+        var selected = await catalog.UpdateLaunchProfileAsync(plannerId, LaunchProfile.Codex);
+        await catalog.UpdateStatusAsync(plannerId, AgentStatus.Disconnected);
+        await catalog.UpdateStatusAsync(plannerId, AgentStatus.Running);
+
+        Assert.Equal(plannerId, selected.Id);
+        Assert.Equal(LaunchProfile.Codex, catalog.SelectedPrimary!.LaunchProfile);
+
+        var restored = new WorkspaceCatalog(fixture.Store);
+        await restored.InitializeAsync(fixture.Directory, LaunchProfile.PowerShell);
+        Assert.Equal(plannerId, restored.SelectedPrimary!.Id);
+        Assert.Equal(LaunchProfile.Codex, restored.SelectedPrimary.LaunchProfile);
+        Assert.Equal(AgentStatus.Disconnected, restored.SelectedPrimary.LastStatus);
+    }
+
+    [Fact]
     public async Task NavigationSelectionsPersistWithoutCreatingLifecycleEventsOrAlerts()
     {
         await using var fixture = new CatalogFixture(); var catalog = await fixture.CreateAsync();

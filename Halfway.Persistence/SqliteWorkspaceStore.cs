@@ -9,14 +9,20 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
     public const int SchemaVersion = 4;
     private readonly SqliteConnection _connection;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly Func<CancellationToken, Task>? _initialSchemaCreated;
     private bool _disposed;
 
-    public SqliteWorkspaceStore(string databasePath)
+    public SqliteWorkspaceStore(string databasePath) : this(databasePath, null)
+    {
+    }
+
+    internal SqliteWorkspaceStore(string databasePath, Func<CancellationToken, Task>? initialSchemaCreated)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
         var directory = Path.GetDirectoryName(Path.GetFullPath(databasePath));
         if (directory is not null) Directory.CreateDirectory(directory);
         _connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = databasePath, Pooling = false }.ToString());
+        _initialSchemaCreated = initialSchemaCreated;
     }
 
     public static string ProductionDatabasePath => Path.Combine(
@@ -45,6 +51,11 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
                     FOREIGN KEY(WorkspaceId) REFERENCES Workspaces(Id),
                     FOREIGN KEY(ParentSessionId) REFERENCES Sessions(Id));
                 """, cancellationToken, transaction);
+            if (_initialSchemaCreated is not null)
+            {
+                await _initialSchemaCreated(cancellationToken);
+            }
+            await ExecuteAsync("PRAGMA user_version = 1;", cancellationToken, transaction);
             await transaction.CommitAsync(cancellationToken);
             version = 1;
         }
@@ -108,6 +119,7 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
                 """, cancellationToken, transaction);
             await transaction.CommitAsync(cancellationToken);
         }
+        await ReconcileWorkspacePathsAsync(cancellationToken);
     }, cancellationToken);
 
     public Task<ApplicationRunStart> StartApplicationRunAsync(ApplicationRun applicationRun, CancellationToken cancellationToken = default) => LockedAsync(async () =>
@@ -155,10 +167,15 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
 
     public Task<WorkspaceMetadata?> FindWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) => LockedAsync(async () =>
     {
-        await using var command = Command("SELECT Id,Name,WorkingDirectory,SelectedPrimarySessionId,SelectedSubAgentSessionId,CreatedAtUtc,UpdatedAtUtc FROM Workspaces WHERE WorkingDirectory=$path;");
-        command.Parameters.AddWithValue("$path", Path.GetFullPath(workingDirectory));
+        var identity = CanonicalWorkspacePath(workingDirectory);
+        await using var command = Command("SELECT Id,Name,WorkingDirectory,SelectedPrimarySessionId,SelectedSubAgentSessionId,CreatedAtUtc,UpdatedAtUtc FROM Workspaces ORDER BY CreatedAtUtc,Id;");
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        return await reader.ReadAsync(cancellationToken) ? ReadWorkspace(reader) : null;
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var workspace = ReadWorkspace(reader);
+            if (string.Equals(CanonicalWorkspacePath(workspace.WorkingDirectory), identity, StringComparison.Ordinal)) return workspace;
+        }
+        return null;
     }, cancellationToken);
 
     public Task<WorkspaceMetadata?> FindMostRecentWorkspaceAsync(CancellationToken cancellationToken = default) => LockedAsync(async () =>
@@ -170,6 +187,7 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
 
     public Task InsertWorkspaceAsync(WorkspaceMetadata workspace, CancellationToken cancellationToken = default) => LockedAsync(async () =>
     {
+        await EnsureWorkspacePathAvailableAsync(workspace.WorkingDirectory, null, cancellationToken);
         await using var command = Command("INSERT INTO Workspaces VALUES($id,$name,$path,$primary,$sub,$created,$updated);");
         Add(command, workspace);
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -178,6 +196,7 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
     public Task InsertInitialWorkspaceAsync(WorkspaceMetadata workspace, IReadOnlyList<SessionMetadata> sessions, IReadOnlyList<AgentRelationship> relationships, CancellationToken cancellationToken = default) => LockedAsync(async () =>
     {
         await using var transaction = await _connection.BeginTransactionAsync(cancellationToken);
+        await EnsureWorkspacePathAvailableAsync(workspace.WorkingDirectory, (SqliteTransaction)transaction, cancellationToken);
         await using (var workspaceCommand = Command("INSERT INTO Workspaces VALUES($id,$name,$path,$primary,$sub,$created,$updated);"))
         {
             workspaceCommand.Transaction = (SqliteTransaction)transaction; Add(workspaceCommand, workspace); await workspaceCommand.ExecuteNonQueryAsync(cancellationToken);
@@ -355,7 +374,7 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
     private static LifecycleEvent ReadLifecycleEvent(SqliteDataReader r) => new(Guid.Parse(r.GetString(0)),Guid.Parse(r.GetString(1)),NullableGuid(r,2),(AgentStatus)r.GetInt32(3),(AgentStatus)r.GetInt32(4),DateTimeOffset.Parse(r.GetString(5),CultureInfo.InvariantCulture),r.GetInt32(6) != 0);
     private static AlertDelivery ReadAlertDelivery(SqliteDataReader r) => new(Guid.Parse(r.GetString(0)),Guid.Parse(r.GetString(1)),r.GetString(2),r.GetString(3),(AlertDeliveryState)r.GetInt32(4),NullableDate(r,5),NullableDate(r,6),DateTimeOffset.Parse(r.GetString(7),CultureInfo.InvariantCulture));
     private static ApplicationRun ReadApplicationRun(SqliteDataReader r) => new(Guid.Parse(r.GetString(0)),DateTimeOffset.Parse(r.GetString(1),CultureInfo.InvariantCulture),NullableDate(r,2),r.GetString(3));
-    private static void Add(SqliteCommand c, WorkspaceMetadata w) { c.Parameters.AddWithValue("$id",w.Id.ToString());c.Parameters.AddWithValue("$name",w.DisplayName);c.Parameters.AddWithValue("$path",Path.GetFullPath(w.WorkingDirectory));c.Parameters.AddWithValue("$primary",Db(w.SelectedPrimarySessionId));c.Parameters.AddWithValue("$sub",Db(w.SelectedSubAgentSessionId));c.Parameters.AddWithValue("$created",Format(w.CreatedAtUtc));c.Parameters.AddWithValue("$updated",Format(w.UpdatedAtUtc)); }
+    private static void Add(SqliteCommand c, WorkspaceMetadata w) { c.Parameters.AddWithValue("$id",w.Id.ToString());c.Parameters.AddWithValue("$name",w.DisplayName);c.Parameters.AddWithValue("$path",StoredWorkspacePath(w.WorkingDirectory));c.Parameters.AddWithValue("$primary",Db(w.SelectedPrimarySessionId));c.Parameters.AddWithValue("$sub",Db(w.SelectedSubAgentSessionId));c.Parameters.AddWithValue("$created",Format(w.CreatedAtUtc));c.Parameters.AddWithValue("$updated",Format(w.UpdatedAtUtc)); }
     private static void Add(SqliteCommand c, SessionMetadata s) { c.Parameters.AddWithValue("$id",s.Id.ToString());c.Parameters.AddWithValue("$workspace",s.WorkspaceId.ToString());c.Parameters.AddWithValue("$key",s.SessionKey);c.Parameters.AddWithValue("$name",s.DisplayName);c.Parameters.AddWithValue("$kind",(int)s.Kind);c.Parameters.AddWithValue("$parent",Db(s.ParentSessionId));c.Parameters.AddWithValue("$profile",(int)s.LaunchProfile);c.Parameters.AddWithValue("$order",s.DisplayOrder);c.Parameters.AddWithValue("$status",(int)s.LastStatus);c.Parameters.AddWithValue("$created",Format(s.CreatedAtUtc));c.Parameters.AddWithValue("$updated",Format(s.UpdatedAtUtc)); }
     private static void Add(SqliteCommand c, LifecycleEvent e) { c.Parameters.AddWithValue("$id",e.Id.ToString());c.Parameters.AddWithValue("$session",e.SessionId.ToString());c.Parameters.AddWithValue("$parent",Db(e.ParentSessionId));c.Parameters.AddWithValue("$previous",(int)e.PreviousStatus);c.Parameters.AddWithValue("$new",(int)e.NewStatus);c.Parameters.AddWithValue("$occurred",Format(e.OccurredAt));c.Parameters.AddWithValue("$eligible",e.AlertEligible ? 1 : 0); }
     private static void Add(SqliteCommand c, AgentRelationship r) { c.Parameters.AddWithValue("$child",r.ChildSessionId.ToString());c.Parameters.AddWithValue("$workspace",r.WorkspaceId.ToString());c.Parameters.AddWithValue("$parent",r.ParentSessionId.ToString());c.Parameters.AddWithValue("$registered",Format(r.RegisteredAtUtc)); }
@@ -386,5 +405,117 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
         await using var command = Command("SELECT d.EventId,e.ParentSessionId,s.DisplayName,d.Message,d.State,d.ReservedAtUtc,d.DeliveredAtUtc,d.UpdatedAtUtc FROM AlertDeliveries d JOIN LifecycleEvents e ON e.Id=d.EventId JOIN Sessions s ON s.Id=e.SessionId WHERE d.EventId=$id;");
         command.Parameters.AddWithValue("$id", eventId.ToString()); await using var reader = await command.ExecuteReaderAsync(token);
         return await reader.ReadAsync(token) ? ReadAlertDelivery(reader) : null;
+    }
+
+    private async Task ReconcileWorkspacePathsAsync(CancellationToken cancellationToken)
+    {
+        var workspaces = new List<WorkspaceMetadata>();
+        await using (var command = Command("SELECT Id,Name,WorkingDirectory,SelectedPrimarySessionId,SelectedSubAgentSessionId,CreatedAtUtc,UpdatedAtUtc FROM Workspaces;"))
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                workspaces.Add(ReadWorkspace(reader));
+            }
+        }
+
+        foreach (var group in workspaces
+            .GroupBy(workspace => CanonicalWorkspacePath(workspace.WorkingDirectory), StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            var ordered = group.OrderBy(workspace => workspace.CreatedAtUtc).ThenBy(workspace => workspace.Id).ToArray();
+            var winner = ordered[0];
+            if (ordered.Length == 1 && string.Equals(winner.WorkingDirectory, StoredWorkspacePath(winner.WorkingDirectory), StringComparison.Ordinal))
+            {
+                continue;
+            }
+            await using var transaction = (SqliteTransaction)await _connection.BeginTransactionAsync(cancellationToken);
+            await ExecuteAsync("PRAGMA defer_foreign_keys = ON;", cancellationToken, transaction);
+
+            var sessionKeys = new HashSet<string>(StringComparer.Ordinal);
+            await using (var keysCommand = Command("SELECT SessionKey FROM Sessions WHERE WorkspaceId=$workspace ORDER BY Id;"))
+            {
+                keysCommand.Transaction = transaction;
+                keysCommand.Parameters.AddWithValue("$workspace", winner.Id.ToString());
+                await using var reader = await keysCommand.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken)) sessionKeys.Add(reader.GetString(0));
+            }
+
+            foreach (var duplicate in ordered.Skip(1))
+            {
+                var duplicateSessions = new List<(Guid Id, string Key)>();
+                await using (var sessionsCommand = Command("SELECT Id,SessionKey FROM Sessions WHERE WorkspaceId=$workspace ORDER BY Id;"))
+                {
+                    sessionsCommand.Transaction = transaction;
+                    sessionsCommand.Parameters.AddWithValue("$workspace", duplicate.Id.ToString());
+                    await using var reader = await sessionsCommand.ExecuteReaderAsync(cancellationToken);
+                    while (await reader.ReadAsync(cancellationToken)) duplicateSessions.Add((Guid.Parse(reader.GetString(0)), reader.GetString(1)));
+                }
+
+                foreach (var session in duplicateSessions)
+                {
+                    var key = session.Key;
+                    if (!sessionKeys.Add(key))
+                    {
+                        key = $"{key}-{session.Id:N}";
+                        sessionKeys.Add(key);
+                        await using var keyCommand = Command("UPDATE Sessions SET SessionKey=$key WHERE Id=$id;");
+                        keyCommand.Transaction = transaction;
+                        keyCommand.Parameters.AddWithValue("$key", key);
+                        keyCommand.Parameters.AddWithValue("$id", session.Id.ToString());
+                        await keyCommand.ExecuteNonQueryAsync(cancellationToken);
+                    }
+                }
+
+                await using (var sessionsCommand = Command("UPDATE Sessions SET WorkspaceId=$winner WHERE WorkspaceId=$duplicate;"))
+                {
+                    sessionsCommand.Transaction = transaction;
+                    sessionsCommand.Parameters.AddWithValue("$winner", winner.Id.ToString());
+                    sessionsCommand.Parameters.AddWithValue("$duplicate", duplicate.Id.ToString());
+                    await sessionsCommand.ExecuteNonQueryAsync(cancellationToken);
+                }
+                await using (var relationshipsCommand = Command("UPDATE AgentRelationships SET WorkspaceId=$winner WHERE WorkspaceId=$duplicate;"))
+                {
+                    relationshipsCommand.Transaction = transaction;
+                    relationshipsCommand.Parameters.AddWithValue("$winner", winner.Id.ToString());
+                    relationshipsCommand.Parameters.AddWithValue("$duplicate", duplicate.Id.ToString());
+                    await relationshipsCommand.ExecuteNonQueryAsync(cancellationToken);
+                }
+                await using (var deleteCommand = Command("DELETE FROM Workspaces WHERE Id=$duplicate;"))
+                {
+                    deleteCommand.Transaction = transaction;
+                    deleteCommand.Parameters.AddWithValue("$duplicate", duplicate.Id.ToString());
+                    await deleteCommand.ExecuteNonQueryAsync(cancellationToken);
+                }
+            }
+
+            await using (var normalizeCommand = Command("UPDATE Workspaces SET WorkingDirectory=$path WHERE Id=$id;"))
+            {
+                normalizeCommand.Transaction = transaction;
+                normalizeCommand.Parameters.AddWithValue("$path", StoredWorkspacePath(winner.WorkingDirectory));
+                normalizeCommand.Parameters.AddWithValue("$id", winner.Id.ToString());
+                await normalizeCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+            await transaction.CommitAsync(cancellationToken);
+        }
+    }
+
+    private static string CanonicalWorkspacePath(string path) =>
+        StoredWorkspacePath(path).ToUpperInvariant();
+
+    private static string StoredWorkspacePath(string path) =>
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+    private async Task EnsureWorkspacePathAvailableAsync(string path, SqliteTransaction? transaction, CancellationToken cancellationToken)
+    {
+        var identity = CanonicalWorkspacePath(path);
+        await using var command = Command("SELECT WorkingDirectory FROM Workspaces;");
+        command.Transaction = transaction;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (string.Equals(CanonicalWorkspacePath(reader.GetString(0)), identity, StringComparison.Ordinal))
+                throw new InvalidOperationException($"A workspace already exists for '{StoredWorkspacePath(path)}'.");
+        }
     }
 }

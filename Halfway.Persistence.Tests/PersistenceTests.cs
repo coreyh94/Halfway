@@ -19,6 +19,101 @@ public sealed class PersistenceTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task InterruptedInitialSchemaCreationRollsBackAndReopensSafely()
+    {
+        var interrupted = new SqliteWorkspaceStore(Database, _ => throw new IOException("injected initialization failure"));
+        await Assert.ThrowsAsync<IOException>(() => interrupted.InitializeAsync());
+        await interrupted.DisposeAsync();
+
+        await using (var connection = new SqliteConnection($"Data Source={Database}"))
+        {
+            await connection.OpenAsync();
+            await using var versionCommand = connection.CreateCommand();
+            versionCommand.CommandText = "PRAGMA user_version;";
+            Assert.Equal(0L, await versionCommand.ExecuteScalarAsync());
+            await using var schemaCommand = connection.CreateCommand();
+            schemaCommand.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%';";
+            Assert.Equal(0L, await schemaCommand.ExecuteScalarAsync());
+        }
+
+        await using var reopened = new SqliteWorkspaceStore(Database);
+        await reopened.InitializeAsync();
+        Assert.Equal(4L, await ScalarAsync("PRAGMA user_version;"));
+    }
+
+    [Fact]
+    public async Task WorkspaceIdentityIsCaseInsensitiveAndPreservesSessionsAndRelationships()
+    {
+        Guid workspaceId;
+        Guid[] sessionIds;
+        await using (var store = new SqliteWorkspaceStore(Database))
+        {
+            var catalog = new WorkspaceCatalog(store);
+            await catalog.InitializeAsync(_directory.ToLowerInvariant(), LaunchProfile.PowerShell);
+            workspaceId = catalog.Workspace.Id;
+            await catalog.CreateSubAgentAsync("Tests", LaunchProfile.Codex);
+            sessionIds = catalog.Sessions.Select(session => session.Id).Order().ToArray();
+
+            Assert.Equal(workspaceId, (await store.FindWorkspaceAsync(_directory.ToUpperInvariant()))!.Id);
+        }
+
+        await using var reopened = new SqliteWorkspaceStore(Database);
+        var restored = new WorkspaceCatalog(reopened);
+        await restored.InitializeAsync(_directory.ToUpperInvariant(), LaunchProfile.PowerShell);
+
+        Assert.Equal(workspaceId, restored.Workspace.Id);
+        Assert.Equal(sessionIds, restored.Sessions.Select(session => session.Id).Order());
+        Assert.Equal(2, restored.Relationships.Count);
+    }
+
+    [Fact]
+    public async Task ExistingCaseDuplicateWorkspacesMergeTransactionallyWithoutSessionLoss()
+    {
+        Guid winnerId;
+        var duplicateId = Guid.NewGuid();
+        var duplicateParentId = Guid.NewGuid();
+        var duplicateChildId = Guid.NewGuid();
+        var now = DateTimeOffset.MaxValue.AddDays(-1).ToString("O");
+        await using (var store = new SqliteWorkspaceStore(Database))
+        {
+            var catalog = new WorkspaceCatalog(store);
+            await catalog.InitializeAsync(_directory.ToLowerInvariant(), LaunchProfile.PowerShell);
+            winnerId = catalog.Workspace.Id;
+        }
+
+        await using (var connection = new SqliteConnection($"Data Source={Database}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                PRAGMA foreign_keys=ON;
+                INSERT INTO Workspaces VALUES($workspace,'Duplicate',$path,$parent,$child,$now,$now);
+                INSERT INTO Sessions VALUES($parent,$workspace,'duplicate-parent','Duplicate Planner',0,NULL,0,0,5,$now,$now);
+                INSERT INTO Sessions VALUES($child,$workspace,'duplicate-child','Duplicate Child',1,$parent,1,0,5,$now,$now);
+                INSERT INTO AgentRelationships VALUES($child,$workspace,$parent,$now);
+                """;
+            command.Parameters.AddWithValue("$workspace", duplicateId.ToString());
+            command.Parameters.AddWithValue("$path", _directory.ToUpperInvariant());
+            command.Parameters.AddWithValue("$parent", duplicateParentId.ToString());
+            command.Parameters.AddWithValue("$child", duplicateChildId.ToString());
+            command.Parameters.AddWithValue("$now", now);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using var reopened = new SqliteWorkspaceStore(Database);
+        await reopened.InitializeAsync();
+        var restored = new WorkspaceCatalog(reopened);
+        await restored.InitializeAsync(_directory.ToUpperInvariant(), LaunchProfile.PowerShell);
+
+        Assert.Equal(winnerId, restored.Workspace.Id);
+        Assert.Contains(restored.Sessions, session => session.Id == duplicateParentId);
+        Assert.Contains(restored.Sessions, session => session.Id == duplicateChildId && session.ParentSessionId == duplicateParentId);
+        Assert.Contains(restored.Relationships, relationship => relationship.ChildSessionId == duplicateChildId && relationship.ParentSessionId == duplicateParentId);
+        Assert.Equal(1L, await ScalarAsync("SELECT COUNT(*) FROM Workspaces;"));
+        Assert.Equal(0L, await ScalarAsync($"SELECT COUNT(*) FROM Sessions WHERE WorkspaceId='{duplicateId}';"));
+    }
+
+    [Fact]
     public async Task ApplicationRunStartsAndCompletesCleanly()
     {
         var startedAt = DateTimeOffset.UnixEpoch.AddHours(1);
@@ -118,6 +213,36 @@ public sealed class PersistenceTests : IAsyncDisposable
         Assert.Equal(eventId, (await migrated.FindLifecycleEventAsync(eventId))!.Id);
         Assert.Equal("preserved", (await migrated.FindAlertDeliveryAsync(eventId))!.Message);
         Assert.Empty(await migrated.LoadApplicationRunsAsync());
+        Assert.Equal(4L, await ScalarAsync("PRAGMA user_version;"));
+    }
+
+    [Fact]
+    public async Task VersionTwoMigrationPreservesSessionsAndBackfillsRelationships()
+    {
+        Guid workspaceId;
+        Guid parentId;
+        Guid childId;
+        await using (var store = new SqliteWorkspaceStore(Database))
+        {
+            var catalog = new WorkspaceCatalog(store);
+            await catalog.InitializeAsync(_directory, LaunchProfile.PowerShell);
+            workspaceId = catalog.Workspace.Id;
+            parentId = catalog.SelectedPrimary!.Id;
+            childId = catalog.SelectedSubAgent!.Id;
+        }
+        await using (var connection = new SqliteConnection($"Data Source={Database}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE ApplicationRuns; DROP TABLE AgentRelationships; DROP INDEX IX_Sessions_WorkspaceId_Id; PRAGMA user_version=2;";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using var migrated = new SqliteWorkspaceStore(Database);
+        await migrated.InitializeAsync();
+
+        Assert.Equal([parentId, childId], (await migrated.LoadSessionsAsync(workspaceId)).Select(session => session.Id));
+        Assert.Equal(new AgentRelationship(workspaceId, parentId, childId, (await migrated.LoadSessionsAsync(workspaceId))[1].CreatedAtUtc), Assert.Single(await migrated.LoadRelationshipsAsync(workspaceId)));
         Assert.Equal(4L, await ScalarAsync("PRAGMA user_version;"));
     }
 
