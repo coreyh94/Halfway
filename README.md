@@ -29,7 +29,7 @@ When a tracked sub-agent completes, Halfway sends a short status update to its p
 - [ENGINEERING_PRINCIPLES.md](ENGINEERING_PRINCIPLES.md)
 - [ROADMAP.md](ROADMAP.md)
 
-## Build and run the Phase 0 spike
+## Build and run the completed Phase 0 spike
 
 Prerequisites:
 
@@ -52,7 +52,7 @@ The **Inject demo alert** button submits exactly one deterministic alert. If use
 
 Runtime launches PowerShell by default. Set `HALFWAY_RUNTIME_LAUNCH=codex` to launch the installed Codex CLI instead; `powershell` explicitly selects the default.
 
-## Current spike limitations
+## Phase 0 limitations
 
 - Terminal output is a bounded 64 KiB raw-text view with common ANSI control sequences removed; it is not a full terminal emulator.
 - Input is line-oriented. Advanced terminal keys, mouse input, search, complete scrollback, copy/paste semantics, and accurate screen-buffer rendering require an established terminal control in a later slice.

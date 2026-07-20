@@ -51,4 +51,25 @@ public sealed class ConPtyTerminalSessionTests
 
         Assert.True(session.Completion.IsCompleted);
     }
+
+    [Fact]
+    public async Task Two_sessions_remain_independent_when_one_is_stopped()
+    {
+        var factory = new ConPtyTerminalSessionFactory();
+        var options = TerminalLaunchOptions.PowerShell(Environment.CurrentDirectory);
+
+        await using var first = await factory.StartAsync(options);
+        await using var second = await factory.StartAsync(options);
+        await Task.Delay(250);
+
+        Assert.NotEqual(first.ProcessId, second.ProcessId);
+        Assert.False(first.Completion.IsCompleted);
+        Assert.False(second.Completion.IsCompleted);
+
+        await first.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        await Task.Delay(100);
+
+        Assert.True(first.Completion.IsCompleted);
+        Assert.False(second.Completion.IsCompleted);
+    }
 }

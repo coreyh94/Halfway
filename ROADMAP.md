@@ -1,18 +1,19 @@
 # Halfway Roadmap
 
-## Phase 0 — Technical Spike
+## Phase 0 — Technical Spike ✓
 
-Validate:
+Validated:
 
-- WinUI 3 application shell.
-- Embedded ConPTY terminal.
-- Launching Codex CLI.
-- Sending input to Codex.
-- Detecting prompt readiness.
-- Injecting one safe `[Halfway Alert!]` message.
-- Running two independent Codex terminals.
+- [x] WinUI 3 application shell.
+- [x] Embedded ConPTY terminal.
+- [x] Launching Codex CLI.
+- [x] Sending input to Codex.
+- [x] Detecting prompt readiness.
+- [x] Injecting one safe `[Halfway Alert!]` message.
+- [x] Running two independent terminal sessions with Codex launch support.
 
 This phase exists to prove the hardest integration risks before polishing the UI.
+Phase 0 was completed with deterministic PowerShell and `cmd.exe` coverage; Codex CLI remains an external runtime prerequisite.
 
 ## Phase 1 — MVP Shell
 
