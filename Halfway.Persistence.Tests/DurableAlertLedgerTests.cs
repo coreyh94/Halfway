@@ -50,9 +50,41 @@ public sealed class DurableAlertLedgerTests : IAsyncDisposable
         Assert.Empty(await ledger.LoadPendingAsync(catalog.SelectedPrimary.Id));
     }
 
-    private static LifecycleTransition Completion(SessionMetadata child)
+    [Fact]
+    public async Task PendingCompletionsCreateOneDeterministicBatchInEventOrder()
     {
-        var item = new LifecycleEvent(Guid.NewGuid(), child.Id, child.ParentSessionId, AgentStatus.Running, AgentStatus.Completed, DateTimeOffset.UtcNow, true);
+        await using var store = new SqliteWorkspaceStore(Path.Combine(_directory, "batch.db")); var catalog = new WorkspaceCatalog(store); await catalog.InitializeAsync(_directory, LaunchProfile.PowerShell);
+        var ui = await catalog.CreateSubAgentAsync("UI", LaunchProfile.PowerShell); var tests = await catalog.CreateSubAgentAsync("Tests", LaunchProfile.PowerShell); var ledger = new DurableAlertLedger(store);
+        var start = DateTimeOffset.UnixEpoch;
+        foreach (var transition in new[] { Completion(catalog.SubAgentSessions.Single(x => x.DisplayName == "Runtime"), start), Completion(ui, start.AddTicks(1)), Completion(tests, start.AddTicks(2)) })
+            await ledger.RecordAsync(transition);
+
+        var batch = await ledger.CreatePendingBatchAsync(catalog.SelectedPrimary!.Id);
+
+        Assert.NotNull(batch); Assert.Equal(3, batch.EventIds.Count);
+        Assert.Equal("[Halfway Alert!] Runtime, UI and Tests completed. Continue orchestration.", batch.Message);
+        Assert.True(await ledger.ReserveAsync(batch.EventIds)); Assert.True(await ledger.CommitAsync(batch.EventIds));
+        Assert.Empty(await ledger.LoadPendingAsync(catalog.SelectedPrimary.Id));
+    }
+
+    [Fact]
+    public async Task BatchReservationIsAllOrNothingAndFailureReleasesEveryMember()
+    {
+        await using var store = new SqliteWorkspaceStore(Path.Combine(_directory, "atomic-batch.db")); var catalog = new WorkspaceCatalog(store); await catalog.InitializeAsync(_directory, LaunchProfile.PowerShell);
+        var second = await catalog.CreateSubAgentAsync("UI", LaunchProfile.PowerShell); var ledger = new DurableAlertLedger(store);
+        await ledger.RecordAsync(Completion(catalog.SubAgentSessions.Single(x => x.DisplayName == "Runtime"))); await ledger.RecordAsync(Completion(second));
+        var batch = (await ledger.CreatePendingBatchAsync(catalog.SelectedPrimary!.Id))!;
+        Assert.True(await ledger.ReserveAsync(batch.EventIds[0]));
+        Assert.False(await ledger.ReserveAsync(batch.EventIds));
+        Assert.Equal(AlertDeliveryState.Pending, (await store.FindAlertDeliveryAsync(batch.EventIds[1]))!.State);
+        Assert.True(await ledger.ReleaseAsync(batch.EventIds[0]));
+        Assert.True(await ledger.ReserveAsync(batch.EventIds)); Assert.True(await ledger.ReleaseAsync(batch.EventIds));
+        Assert.All(await ledger.LoadPendingAsync(catalog.SelectedPrimary.Id), item => Assert.Equal(AlertDeliveryState.Pending, item.State));
+    }
+
+    private static LifecycleTransition Completion(SessionMetadata child, DateTimeOffset? occurredAt = null)
+    {
+        var item = new LifecycleEvent(Guid.NewGuid(), child.Id, child.ParentSessionId, AgentStatus.Running, AgentStatus.Completed, occurredAt ?? DateTimeOffset.UtcNow, true);
         return new LifecycleTransition(new AgentSession(child.Id, child.DisplayName, child.Kind, child.ParentSessionId, AgentStatus.Completed), item, new CompletionAlert(item.Id, child.ParentSessionId!.Value, [child.DisplayName]));
     }
 

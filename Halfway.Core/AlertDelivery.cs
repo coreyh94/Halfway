@@ -10,6 +10,7 @@ public enum AlertDeliveryState
 public sealed record AlertDelivery(
     Guid EventId,
     Guid ParentSessionId,
+    string SessionDisplayName,
     string Message,
     AlertDeliveryState State,
     DateTimeOffset? ReservedAtUtc,

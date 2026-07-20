@@ -94,4 +94,14 @@ public sealed class AlertInputCoordinatorTests
         coordinator.RequestAlert(firstId, AlertInputCoordinator.DemonstrationAlert);
         Assert.Null(coordinator.TakeReadyAlertReservation());
     }
+
+    [Fact]
+    public void QueuedDurableAlertCanExpandBeforeReservationButNotWhileInFlight()
+    {
+        var readiness = new ShellReadinessAdapter(); var coordinator = new AlertInputCoordinator(readiness); var eventId = Guid.NewGuid();
+        coordinator.RequestAlert(eventId, "single"); coordinator.RequestAlert(eventId, "batched"); readiness.ObserveOutput("ready");
+        Assert.Equal("batched", coordinator.TakeReadyAlertReservation()!.Message);
+        coordinator.RequestAlert(eventId, "too late"); coordinator.ReleaseAlertDelivery();
+        Assert.Equal("batched", coordinator.TakeReadyAlertReservation()!.Message);
+    }
 }

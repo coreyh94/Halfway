@@ -18,8 +18,11 @@ public interface IWorkspaceStore : IAsyncDisposable
     Task<AlertDelivery> EnsureAlertDeliveryAsync(LifecycleEvent lifecycleEvent, string message, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<AlertDelivery>> LoadPendingAlertsAsync(Guid parentSessionId, CancellationToken cancellationToken = default);
     Task<bool> ReserveAlertAsync(Guid eventId, DateTimeOffset reservedAtUtc, CancellationToken cancellationToken = default);
+    Task<bool> ReserveAlertsAsync(IReadOnlyCollection<Guid> eventIds, DateTimeOffset reservedAtUtc, CancellationToken cancellationToken = default);
     Task<bool> CommitAlertAsync(Guid eventId, DateTimeOffset deliveredAtUtc, CancellationToken cancellationToken = default);
+    Task<bool> CommitAlertsAsync(IReadOnlyCollection<Guid> eventIds, DateTimeOffset deliveredAtUtc, CancellationToken cancellationToken = default);
     Task<bool> ReleaseAlertAsync(Guid eventId, DateTimeOffset updatedAtUtc, CancellationToken cancellationToken = default);
+    Task<bool> ReleaseAlertsAsync(IReadOnlyCollection<Guid> eventIds, DateTimeOffset updatedAtUtc, CancellationToken cancellationToken = default);
     Task<int> RecoverStaleReservationsAsync(DateTimeOffset updatedAtUtc, CancellationToken cancellationToken = default);
     Task<AlertDelivery?> FindAlertDeliveryAsync(Guid eventId, CancellationToken cancellationToken = default);
 }

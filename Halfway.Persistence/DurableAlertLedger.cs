@@ -23,12 +23,35 @@ public sealed class DurableAlertLedger
     public Task<bool> ReserveAsync(Guid eventId, CancellationToken cancellationToken = default) =>
         _store.ReserveAlertAsync(eventId, DateTimeOffset.UtcNow, cancellationToken);
 
+    public Task<bool> ReserveAsync(IReadOnlyCollection<Guid> eventIds, CancellationToken cancellationToken = default) =>
+        _store.ReserveAlertsAsync(eventIds, DateTimeOffset.UtcNow, cancellationToken);
+
     public Task<bool> CommitAsync(Guid eventId, CancellationToken cancellationToken = default) =>
         _store.CommitAlertAsync(eventId, DateTimeOffset.UtcNow, cancellationToken);
+
+    public Task<bool> CommitAsync(IReadOnlyCollection<Guid> eventIds, CancellationToken cancellationToken = default) =>
+        _store.CommitAlertsAsync(eventIds, DateTimeOffset.UtcNow, cancellationToken);
 
     public Task<bool> ReleaseAsync(Guid eventId, CancellationToken cancellationToken = default) =>
         _store.ReleaseAlertAsync(eventId, DateTimeOffset.UtcNow, cancellationToken);
 
+    public Task<bool> ReleaseAsync(IReadOnlyCollection<Guid> eventIds, CancellationToken cancellationToken = default) =>
+        _store.ReleaseAlertsAsync(eventIds, DateTimeOffset.UtcNow, cancellationToken);
+
+    public async Task<DurableAlertBatch?> CreatePendingBatchAsync(Guid parentSessionId, CancellationToken cancellationToken = default)
+    {
+        var pending = await LoadPendingAsync(parentSessionId, cancellationToken);
+        if (pending.Count == 0) return null;
+        var eventIds = pending.Select(item => item.EventId).ToArray();
+        var message = new CompletionAlert(eventIds[0], parentSessionId, pending.Select(item => item.SessionDisplayName).ToArray()).Message;
+        return new DurableAlertBatch(eventIds, parentSessionId, message);
+    }
+
     public Task<int> RecoverAsync(CancellationToken cancellationToken = default) =>
         _store.RecoverStaleReservationsAsync(DateTimeOffset.UtcNow, cancellationToken);
+}
+
+public sealed record DurableAlertBatch(IReadOnlyList<Guid> EventIds, Guid ParentSessionId, string Message)
+{
+    public Guid ReservationId => EventIds[0];
 }

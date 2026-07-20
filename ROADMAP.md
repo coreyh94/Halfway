@@ -36,10 +36,10 @@ Phase 1 restores durable workspace/session metadata while always starting newly 
 - [x] Durable lifecycle-event ledger.
 - [x] Restart-safe alert deduplication.
 - [x] Durable completion alert delivery.
-- Batched completions.
+- [x] Deterministic batched completions.
 - [x] Pending/Reserved/Delivered restart-safe delivery state.
 
-The first Phase 2 slice persists eligible lifecycle events, atomically reserves delivery, recovers stale reservations, retries pending alerts after restart, and never requeues delivered alerts. Terminal transcripts and prompts remain unpersisted. Alert batching and the remaining lifecycle-tracking work are not complete.
+The first Phase 2 slice persists eligible lifecycle events, atomically reserves delivery, recovers stale reservations, retries pending alerts after restart, and never requeues delivered alerts. The next slice batches same-parent completions through a fixed event-driven window and atomically applies delivery state to every batch member. Terminal transcripts and prompts remain unpersisted. Other lifecycle-tracking work is not complete.
 
 ## Phase 3 — Usability
 

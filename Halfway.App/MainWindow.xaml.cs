@@ -12,6 +12,7 @@ namespace Halfway.App;
 
 public sealed partial class MainWindow : Window
 {
+    private static readonly TimeSpan CompletionBatchWindow = TimeSpan.FromMilliseconds(250);
     private readonly SessionRegistry _registry = new();
     private readonly SessionCoordinator _coordinator;
     private readonly IWorkspaceStore _store;
@@ -24,6 +25,8 @@ public sealed partial class MainWindow : Window
     private AlertInputCoordinator _alerts;
     private readonly object _lifecyclePersistenceGate = new();
     private Task _lifecyclePersistence = Task.CompletedTask;
+    private DurableAlertBatch? _currentBatch;
+    private CancellationTokenSource? _batchDelay;
     private bool _initialized;
     private bool _syncingSelection;
 
@@ -55,7 +58,6 @@ public sealed partial class MainWindow : Window
             BuildWorkspaceUi(); RefreshInformationBar();
             if (_catalog.SelectedPrimary is { } primary) await StartSessionAsync(primary);
             if (_catalog.SelectedSubAgent is { } subAgent) await StartSessionAsync(subAgent);
-            if (_catalog.SelectedPrimary is { } restoredParent) await QueuePendingAlertsAsync(restoredParent);
         }
         catch (Exception exception)
         {
@@ -113,6 +115,7 @@ public sealed partial class MainWindow : Window
             await _coordinator.StartAsync(new ManagedSession(metadata.SessionKey, metadata.Id, metadata.DisplayName, metadata.Kind, metadata.ParentSessionId),
                 RuntimeLaunchAdapterSelection.Create(metadata.LaunchProfile == LaunchProfile.Codex ? RuntimeLaunchProfile.Codex : RuntimeLaunchProfile.PowerShell),
                 new RuntimeLaunchContext(_catalog.Workspace.WorkingDirectory, new TerminalSize(100,30)));
+            if (metadata.Kind == AgentKind.Primary) await QueuePendingAlertsAsync(metadata);
             view.FocusInput();
         }
         catch (Exception exception)
@@ -186,8 +189,7 @@ public sealed partial class MainWindow : Window
                 {
                     if (_catalog.SelectedPrimary?.Id == alert.ParentSessionId && _catalog.SelectedPrimary is { } parent)
                     {
-                        _alerts.RequestAlert(alert.EventId, alert.Message);
-                        await TryDeliverAlertAsync(parent);
+                        SchedulePendingAlerts(parent);
                     }
                 });
             }
@@ -205,33 +207,56 @@ public sealed partial class MainWindow : Window
     private async Task TryDeliverAlertAsync(SessionMetadata parent)
     {
         var alert = _alerts.TakeReadyAlertReservation(); if (alert is null) return;
-        if (alert.EventId != Guid.Empty && !await _ledger.ReserveAsync(alert.EventId))
+        var eventIds = alert.EventId == Guid.Empty
+            ? Array.Empty<Guid>()
+            : _currentBatch is { } batch && batch.ReservationId == alert.EventId ? batch.EventIds : [alert.EventId];
+        if (eventIds.Count > 0 && !await _ledger.ReserveAsync(eventIds))
         {
             _alerts.CommitAlertDelivery();
+            _currentBatch = null;
             await QueuePendingAlertsAsync(parent);
             return;
         }
         try
         {
             await _coordinator.WriteAsync(parent.SessionKey, alert.Message + "\r");
-            if (alert.EventId != Guid.Empty && !await _ledger.CommitAsync(alert.EventId)) throw new InvalidOperationException("Alert delivery could not be committed.");
+            if (eventIds.Count > 0 && !await _ledger.CommitAsync(eventIds)) throw new InvalidOperationException("Alert delivery could not be committed.");
             _alerts.CommitAlertDelivery();
+            _currentBatch = null;
             await QueuePendingAlertsAsync(parent);
         }
         catch
         {
-            if (alert.EventId != Guid.Empty) await _ledger.ReleaseAsync(alert.EventId);
+            if (eventIds.Count > 0) await _ledger.ReleaseAsync(eventIds);
             _alerts.ReleaseAlertDelivery();
         }
     }
 
     private async Task QueuePendingAlertsAsync(SessionMetadata parent)
     {
-        foreach (var alert in await _ledger.LoadPendingAsync(parent.Id))
+        var batch = await _ledger.CreatePendingBatchAsync(parent.Id); if (batch is null) return;
+        _currentBatch = batch;
+        _alerts.RequestAlert(batch.ReservationId, batch.Message);
+        await TryDeliverAlertAsync(parent);
+    }
+
+    private void SchedulePendingAlerts(SessionMetadata parent)
+    {
+        _batchDelay?.Cancel(); _batchDelay?.Dispose(); _batchDelay = new CancellationTokenSource(); var token = _batchDelay.Token;
+        _ = WaitForCompletionBatchAsync(parent, token);
+    }
+
+    private async Task WaitForCompletionBatchAsync(SessionMetadata parent, CancellationToken cancellationToken)
+    {
+        try
         {
-            _alerts.RequestAlert(alert.EventId, alert.Message);
-            await TryDeliverAlertAsync(parent);
-            if (_alerts.HasQueuedAlert) break;
+            await Task.Delay(CompletionBatchWindow, cancellationToken);
+            await QueuePendingAlertsAsync(parent);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            DispatcherQueue.TryEnqueue(() => _views[parent.Id].Append($"\n[Unable to prepare completion batch: {exception.Message}]\n"));
         }
     }
 
@@ -294,6 +319,7 @@ public sealed partial class MainWindow : Window
 
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
+        _batchDelay?.Cancel(); _batchDelay?.Dispose();
         _coordinator.DisposeAsync().AsTask().GetAwaiter().GetResult();
         Task persistence;
         lock (_lifecyclePersistenceGate) persistence = _lifecyclePersistence;

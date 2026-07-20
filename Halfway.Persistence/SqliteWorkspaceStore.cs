@@ -182,7 +182,7 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
 
     public Task<IReadOnlyList<AlertDelivery>> LoadPendingAlertsAsync(Guid parentSessionId, CancellationToken cancellationToken = default) => LockedAsync(async () =>
     {
-        await using var command = Command("SELECT d.EventId,e.ParentSessionId,d.Message,d.State,d.ReservedAtUtc,d.DeliveredAtUtc,d.UpdatedAtUtc FROM AlertDeliveries d JOIN LifecycleEvents e ON e.Id=d.EventId WHERE e.ParentSessionId=$parent AND d.State=$pending ORDER BY e.OccurredAtUtc,e.Id;");
+        await using var command = Command("SELECT d.EventId,e.ParentSessionId,s.DisplayName,d.Message,d.State,d.ReservedAtUtc,d.DeliveredAtUtc,d.UpdatedAtUtc FROM AlertDeliveries d JOIN LifecycleEvents e ON e.Id=d.EventId JOIN Sessions s ON s.Id=e.SessionId WHERE e.ParentSessionId=$parent AND d.State=$pending ORDER BY e.OccurredAtUtc,e.Id;");
         command.Parameters.AddWithValue("$parent", parentSessionId.ToString()); command.Parameters.AddWithValue("$pending", (int)AlertDeliveryState.Pending);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken); var items = new List<AlertDelivery>();
         while (await reader.ReadAsync(cancellationToken)) items.Add(ReadAlertDelivery(reader));
@@ -192,11 +192,20 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
     public Task<bool> ReserveAlertAsync(Guid eventId, DateTimeOffset reservedAtUtc, CancellationToken cancellationToken = default) =>
         ChangeStateAsync(eventId, AlertDeliveryState.Pending, AlertDeliveryState.Reserved, reservedAtUtc, "ReservedAtUtc=$time", cancellationToken);
 
+    public Task<bool> ReserveAlertsAsync(IReadOnlyCollection<Guid> eventIds, DateTimeOffset reservedAtUtc, CancellationToken cancellationToken = default) =>
+        ChangeStatesAsync(eventIds, AlertDeliveryState.Pending, AlertDeliveryState.Reserved, reservedAtUtc, "ReservedAtUtc=$time", cancellationToken);
+
     public Task<bool> CommitAlertAsync(Guid eventId, DateTimeOffset deliveredAtUtc, CancellationToken cancellationToken = default) =>
         ChangeStateAsync(eventId, AlertDeliveryState.Reserved, AlertDeliveryState.Delivered, deliveredAtUtc, "DeliveredAtUtc=$time", cancellationToken);
 
+    public Task<bool> CommitAlertsAsync(IReadOnlyCollection<Guid> eventIds, DateTimeOffset deliveredAtUtc, CancellationToken cancellationToken = default) =>
+        ChangeStatesAsync(eventIds, AlertDeliveryState.Reserved, AlertDeliveryState.Delivered, deliveredAtUtc, "DeliveredAtUtc=$time", cancellationToken);
+
     public Task<bool> ReleaseAlertAsync(Guid eventId, DateTimeOffset updatedAtUtc, CancellationToken cancellationToken = default) =>
         ChangeStateAsync(eventId, AlertDeliveryState.Reserved, AlertDeliveryState.Pending, updatedAtUtc, "ReservedAtUtc=NULL", cancellationToken);
+
+    public Task<bool> ReleaseAlertsAsync(IReadOnlyCollection<Guid> eventIds, DateTimeOffset updatedAtUtc, CancellationToken cancellationToken = default) =>
+        ChangeStatesAsync(eventIds, AlertDeliveryState.Reserved, AlertDeliveryState.Pending, updatedAtUtc, "ReservedAtUtc=NULL", cancellationToken);
 
     public Task<int> RecoverStaleReservationsAsync(DateTimeOffset updatedAtUtc, CancellationToken cancellationToken = default) => LockedAsync(async () =>
     {
@@ -231,7 +240,7 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
     private static WorkspaceMetadata ReadWorkspace(SqliteDataReader r) => new(Guid.Parse(r.GetString(0)),r.GetString(1),r.GetString(2),NullableGuid(r,3),NullableGuid(r,4),DateTimeOffset.Parse(r.GetString(5),CultureInfo.InvariantCulture),DateTimeOffset.Parse(r.GetString(6),CultureInfo.InvariantCulture));
     private static SessionMetadata ReadSession(SqliteDataReader r) { var status=(AgentStatus)r.GetInt32(8); if(status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting) status=AgentStatus.Disconnected; return new(Guid.Parse(r.GetString(0)),Guid.Parse(r.GetString(1)),r.GetString(2),r.GetString(3),(AgentKind)r.GetInt32(4),NullableGuid(r,5),(LaunchProfile)r.GetInt32(6),r.GetInt32(7),status,DateTimeOffset.Parse(r.GetString(9),CultureInfo.InvariantCulture),DateTimeOffset.Parse(r.GetString(10),CultureInfo.InvariantCulture)); }
     private static LifecycleEvent ReadLifecycleEvent(SqliteDataReader r) => new(Guid.Parse(r.GetString(0)),Guid.Parse(r.GetString(1)),NullableGuid(r,2),(AgentStatus)r.GetInt32(3),(AgentStatus)r.GetInt32(4),DateTimeOffset.Parse(r.GetString(5),CultureInfo.InvariantCulture),r.GetInt32(6) != 0);
-    private static AlertDelivery ReadAlertDelivery(SqliteDataReader r) => new(Guid.Parse(r.GetString(0)),Guid.Parse(r.GetString(1)),r.GetString(2),(AlertDeliveryState)r.GetInt32(3),NullableDate(r,4),NullableDate(r,5),DateTimeOffset.Parse(r.GetString(6),CultureInfo.InvariantCulture));
+    private static AlertDelivery ReadAlertDelivery(SqliteDataReader r) => new(Guid.Parse(r.GetString(0)),Guid.Parse(r.GetString(1)),r.GetString(2),r.GetString(3),(AlertDeliveryState)r.GetInt32(4),NullableDate(r,5),NullableDate(r,6),DateTimeOffset.Parse(r.GetString(7),CultureInfo.InvariantCulture));
     private static void Add(SqliteCommand c, WorkspaceMetadata w) { c.Parameters.AddWithValue("$id",w.Id.ToString());c.Parameters.AddWithValue("$name",w.DisplayName);c.Parameters.AddWithValue("$path",Path.GetFullPath(w.WorkingDirectory));c.Parameters.AddWithValue("$primary",Db(w.SelectedPrimarySessionId));c.Parameters.AddWithValue("$sub",Db(w.SelectedSubAgentSessionId));c.Parameters.AddWithValue("$created",Format(w.CreatedAtUtc));c.Parameters.AddWithValue("$updated",Format(w.UpdatedAtUtc)); }
     private static void Add(SqliteCommand c, SessionMetadata s) { c.Parameters.AddWithValue("$id",s.Id.ToString());c.Parameters.AddWithValue("$workspace",s.WorkspaceId.ToString());c.Parameters.AddWithValue("$key",s.SessionKey);c.Parameters.AddWithValue("$name",s.DisplayName);c.Parameters.AddWithValue("$kind",(int)s.Kind);c.Parameters.AddWithValue("$parent",Db(s.ParentSessionId));c.Parameters.AddWithValue("$profile",(int)s.LaunchProfile);c.Parameters.AddWithValue("$order",s.DisplayOrder);c.Parameters.AddWithValue("$status",(int)s.LastStatus);c.Parameters.AddWithValue("$created",Format(s.CreatedAtUtc));c.Parameters.AddWithValue("$updated",Format(s.UpdatedAtUtc)); }
     private static void Add(SqliteCommand c, LifecycleEvent e) { c.Parameters.AddWithValue("$id",e.Id.ToString());c.Parameters.AddWithValue("$session",e.SessionId.ToString());c.Parameters.AddWithValue("$parent",Db(e.ParentSessionId));c.Parameters.AddWithValue("$previous",(int)e.PreviousStatus);c.Parameters.AddWithValue("$new",(int)e.NewStatus);c.Parameters.AddWithValue("$occurred",Format(e.OccurredAt));c.Parameters.AddWithValue("$eligible",e.AlertEligible ? 1 : 0); }
@@ -243,9 +252,23 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
         return await command.ExecuteNonQueryAsync(token) == 1;
     }, token);
 
+    private Task<bool> ChangeStatesAsync(IReadOnlyCollection<Guid> eventIds, AlertDeliveryState expected, AlertDeliveryState next, DateTimeOffset at, string timestampAssignment, CancellationToken token) => LockedAsync(async () =>
+    {
+        if (eventIds.Count == 0) return false;
+        await using var transaction = await _connection.BeginTransactionAsync(token);
+        foreach (var eventId in eventIds.Distinct())
+        {
+            await using var command = Command($"UPDATE AlertDeliveries SET State=$next,{timestampAssignment},UpdatedAtUtc=$time WHERE EventId=$id AND State=$expected;");
+            command.Transaction = (SqliteTransaction)transaction; command.Parameters.AddWithValue("$id", eventId.ToString());
+            command.Parameters.AddWithValue("$expected", (int)expected); command.Parameters.AddWithValue("$next", (int)next); command.Parameters.AddWithValue("$time", Format(at));
+            if (await command.ExecuteNonQueryAsync(token) != 1) { await transaction.RollbackAsync(token); return false; }
+        }
+        await transaction.CommitAsync(token); return true;
+    }, token);
+
     private async Task<AlertDelivery?> FindAlertDeliveryUnlockedAsync(Guid eventId, CancellationToken token)
     {
-        await using var command = Command("SELECT d.EventId,e.ParentSessionId,d.Message,d.State,d.ReservedAtUtc,d.DeliveredAtUtc,d.UpdatedAtUtc FROM AlertDeliveries d JOIN LifecycleEvents e ON e.Id=d.EventId WHERE d.EventId=$id;");
+        await using var command = Command("SELECT d.EventId,e.ParentSessionId,s.DisplayName,d.Message,d.State,d.ReservedAtUtc,d.DeliveredAtUtc,d.UpdatedAtUtc FROM AlertDeliveries d JOIN LifecycleEvents e ON e.Id=d.EventId JOIN Sessions s ON s.Id=e.SessionId WHERE d.EventId=$id;");
         command.Parameters.AddWithValue("$id", eventId.ToString()); await using var reader = await command.ExecuteReaderAsync(token);
         return await reader.ReadAsync(token) ? ReadAlertDelivery(reader) : null;
     }

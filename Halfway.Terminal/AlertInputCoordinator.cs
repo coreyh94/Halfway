@@ -40,7 +40,14 @@ public sealed class AlertInputCoordinator
         ArgumentException.ThrowIfNullOrWhiteSpace(alert);
         if (!_delivered.Contains(eventId))
         {
-            _queuedAlert ??= new AlertInputReservation(eventId, alert);
+            if (_queuedAlert is null)
+            {
+                _queuedAlert = new AlertInputReservation(eventId, alert);
+            }
+            else if (!_alertInFlight && _queuedAlert.EventId == eventId)
+            {
+                _queuedAlert = new AlertInputReservation(eventId, alert);
+            }
         }
     }
 

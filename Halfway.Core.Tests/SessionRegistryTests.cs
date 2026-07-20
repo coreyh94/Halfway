@@ -56,6 +56,16 @@ public sealed class SessionRegistryTests
     }
 
     [Theory]
+    [InlineData("Runtime|UI", "[Halfway Alert!] Runtime and UI completed. Continue orchestration.")]
+    [InlineData("Runtime|UI|Tests", "[Halfway Alert!] Runtime, UI and Tests completed. Continue orchestration.")]
+    public void Completion_alert_formats_deterministic_batches(string joinedNames, string expected)
+    {
+        var alert = new CompletionAlert(Guid.NewGuid(), Guid.NewGuid(), joinedNames.Split('|'));
+
+        Assert.Equal(expected, alert.Message);
+    }
+
+    [Theory]
     [InlineData(AgentStatus.Queued)]
     [InlineData(AgentStatus.Running)]
     [InlineData(AgentStatus.Completed)]

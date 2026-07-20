@@ -71,7 +71,9 @@ The production database is `%LOCALAPPDATA%\Halfway\halfway.db`. It stores determ
 
 On first run, the catalog creates Planner and Runtime metadata and selects both. On restore, stable IDs and selection are reused. Queued, Running, and Waiting metadata is normalized to Disconnected because no previous process is considered alive. Completed, Failed, and Disconnected remain visible. The selected Planner and sub-agent start as fresh processes; other restored sessions require an explicit Start/Restart. Halfway never reattaches to an old process or creates an event solely because metadata was restored.
 
-At startup, stale `Reserved` deliveries return to `Pending`. Pending alerts remain eligible but are not sent until the matching parent Planner is newly running, its readiness adapter reports safe input, and no partial input exists. Reservation is an atomic compare-and-update; a successful terminal write is followed by a `Delivered` commit, while failure or cancellation releases the record to `Pending`. Delivered records never become eligible again. This slice delivers alerts individually; batching remains future work.
+At startup, stale `Reserved` deliveries return to `Pending`. Pending alerts remain eligible but are not sent until the matching parent Planner is newly running, its readiness adapter reports safe input, and no partial input exists. Reservation is an atomic compare-and-update; a successful terminal write is followed by a `Delivered` commit, while failure or cancellation releases the record to `Pending`. Delivered records never become eligible again.
+
+Live completions for the same parent use a fixed 250 ms event-driven coalescing window. All pending members of a batch are reserved, committed, or released together in one SQLite transaction, while remaining independent lifecycle and delivery records. The message is deterministic and contains only persisted sub-agent display names. No polling, terminal content, or model-generated summary participates in batching. Restored pending events may also form one batch once their newly started parent becomes safe for input.
 
 ### WorkspaceManager
 
