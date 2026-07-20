@@ -20,6 +20,7 @@ public sealed partial class MainWindow : Window
     private readonly SessionCoordinator _sessions;
     private readonly Guid _plannerId = Guid.NewGuid();
     private readonly Guid _runtimeId = Guid.NewGuid();
+    private readonly IRuntimeLaunchAdapter _runtimeLaunchAdapter = new PowerShellRuntimeLaunchAdapter();
     private IProcessReadinessAdapter _readiness = new ShellReadinessAdapter();
     private AlertInputCoordinator _alertCoordinator;
     private bool _submittingUserInput;
@@ -92,7 +93,8 @@ public sealed partial class MainWindow : Window
         {
             await _sessions.StartAsync(
                 new ManagedSession(RuntimeKey, _runtimeId, "Runtime", AgentKind.SubAgent, _plannerId),
-                TerminalLaunchOptions.PowerShell(GetWorkingDirectory()) with { InitialSize = GetRuntimeSize() });
+                _runtimeLaunchAdapter,
+                new RuntimeLaunchContext(GetWorkingDirectory(), GetRuntimeSize()));
             RuntimeInputText.Focus(FocusState.Programmatic);
         }
         catch (Exception exception) { AppendRuntime($"[Unable to start Runtime: {exception.Message}]\n"); }

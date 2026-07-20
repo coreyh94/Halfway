@@ -62,6 +62,17 @@ public sealed class SessionCoordinator : IAsyncDisposable
         }
     }
 
+    public Task StartAsync(
+        ManagedSession descriptor,
+        IRuntimeLaunchAdapter launchAdapter,
+        RuntimeLaunchContext launchContext,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(launchAdapter);
+        var options = launchAdapter.CreateOptions(launchContext, cancellationToken);
+        return StartAsync(descriptor, options, cancellationToken);
+    }
+
     public Task WriteAsync(string key, string input, CancellationToken cancellationToken = default)
     {
         var terminal = GetState(key).Terminal;

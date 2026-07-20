@@ -36,6 +36,42 @@ public sealed class SessionCoordinatorTests
     }
 
     [Fact]
+    public async Task Runtime_launch_adapter_selects_options_before_factory_start()
+    {
+        var factory = new FakeFactory();
+        var coordinator = CreateCoordinator(factory, out var plannerId, out var runtimeId);
+        var adapter = new RecordingLaunchAdapter();
+        var context = new RuntimeLaunchContext("runtime-directory", new TerminalSize(120, 40));
+
+        await coordinator.StartAsync(
+            Descriptor("runtime", runtimeId, "Runtime", plannerId),
+            adapter,
+            context);
+
+        Assert.Same(context, adapter.Context);
+        Assert.Equal("adapter-command.exe", factory.Options[0].FileName);
+        Assert.Equal(context.WorkingDirectory, factory.Options[0].WorkingDirectory);
+    }
+
+    [Fact]
+    public async Task Cancelled_runtime_launch_does_not_claim_session_ownership()
+    {
+        var factory = new FakeFactory();
+        var coordinator = CreateCoordinator(factory, out _, out var runtimeId);
+        var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => coordinator.StartAsync(
+            Descriptor("runtime", runtimeId, "Runtime", Guid.NewGuid()),
+            new PowerShellRuntimeLaunchAdapter(),
+            new RuntimeLaunchContext(Environment.CurrentDirectory, new TerminalSize(80, 24)),
+            cancellation.Token));
+
+        Assert.Empty(factory.Options);
+        Assert.Throws<KeyNotFoundException>(() => coordinator.Get("runtime"));
+    }
+
+    [Fact]
     public async Task Successful_runtime_exit_completes_and_alerts_once()
     {
         var factory = new FakeFactory();
@@ -85,8 +121,21 @@ public sealed class SessionCoordinatorTests
     private sealed class FakeFactory : ITerminalSessionFactory
     {
         public List<FakeSession> Sessions { get; } = [];
+        public List<TerminalLaunchOptions> Options { get; } = [];
         public Task<ITerminalSession> StartAsync(TerminalLaunchOptions options, CancellationToken cancellationToken = default)
-        { var session = new FakeSession(Sessions.Count + 1); Sessions.Add(session); return Task.FromResult<ITerminalSession>(session); }
+        { Options.Add(options); var session = new FakeSession(Sessions.Count + 1); Sessions.Add(session); return Task.FromResult<ITerminalSession>(session); }
+    }
+
+    private sealed class RecordingLaunchAdapter : IRuntimeLaunchAdapter
+    {
+        public RuntimeLaunchContext? Context { get; private set; }
+
+        public TerminalLaunchOptions CreateOptions(RuntimeLaunchContext context, CancellationToken cancellationToken = default)
+        {
+            Context = context;
+            cancellationToken.ThrowIfCancellationRequested();
+            return new TerminalLaunchOptions("adapter-command.exe", [], context.WorkingDirectory, context.InitialSize);
+        }
     }
 
     private sealed class FakeSession(int processId) : ITerminalSession
