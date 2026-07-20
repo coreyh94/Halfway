@@ -20,6 +20,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Halfway.Persistence", "Half
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Halfway.Persistence.Tests", "Halfway.Persistence.Tests\Halfway.Persistence.Tests.csproj", "{89C6FDFF-70CE-4718-B25C-DC56A4DB4C24}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Halfway.Reliability.Tests", "Halfway.Reliability.Tests\Halfway.Reliability.Tests.csproj", "{54F47D86-BC43-4D8A-9084-9D909C3FC4CE}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -62,6 +64,10 @@ Global
 		{89C6FDFF-70CE-4718-B25C-DC56A4DB4C24}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{89C6FDFF-70CE-4718-B25C-DC56A4DB4C24}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{89C6FDFF-70CE-4718-B25C-DC56A4DB4C24}.Release|Any CPU.Build.0 = Release|Any CPU
+		{54F47D86-BC43-4D8A-9084-9D909C3FC4CE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{54F47D86-BC43-4D8A-9084-9D909C3FC4CE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{54F47D86-BC43-4D8A-9084-9D909C3FC4CE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{54F47D86-BC43-4D8A-9084-9D909C3FC4CE}.Release|Any CPU.Build.0 = Release|Any CPU
 		{F1A9E5F2-3E55-4E30-9DD8-84DB1D9C3E1A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{F1A9E5F2-3E55-4E30-9DD8-84DB1D9C3E1A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{F1A9E5F2-3E55-4E30-9DD8-84DB1D9C3E1A}.Release|Any CPU.ActiveCfg = Release|Any CPU

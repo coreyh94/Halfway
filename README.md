@@ -67,6 +67,8 @@ Use **Export diagnostics** in the information bar to write `%LOCALAPPDATA%\Halfw
 
 Diagnostics are memory-only until the user exports them and are cleared on restart. They never contain terminal output or transcripts, prompts, partial input, submitted user input, alert terminal payloads, environment variables, command lines, file contents, stack dumps, API keys, tokens, passwords, or secrets. They do not create lifecycle events, alerts, notifications, unread state, or terminal messages. SQLite remains at schema version 4 and stores no diagnostic records.
 
+Phase 4 reliability sequences are covered by a dedicated integration test project using deterministic terminal fakes, readiness signals, and temporary real SQLite databases. The tests span start/readiness/input, completion batching, alert reserve-release-retry-commit, restart recovery, delivered-alert deduplication, stop and exit mapping, restore isolation, crash markers, stale ownership, session-bound queued input, notification facts, and diagnostics privacy. They require neither Codex CLI nor arbitrary timing sleeps, while the existing real ConPTY round trips remain part of the full solution suite.
+
 ## Build and run Phase 1
 
 Prerequisites:

@@ -53,14 +53,14 @@ Phase 2 persists eligible lifecycle events, atomically reserves delivery, recove
 
 Phase 3 adds deterministic keyboard navigation, bounded in-memory terminal search, last-workspace restore, transient unread indicators, constrained panel resizing, system light/dark palettes, and best-effort Windows notifications for background failures. None of these usability features persist terminal content or manufacture lifecycle events or terminal messages.
 
-## Phase 4 — Reliability
+## Phase 4 — Reliability ✓
 
 - [x] Crash-state detection and clean shutdown tracking.
 - [x] Stale live-session detection and reconciliation.
 - [x] Safe in-memory submitted user-input queuing.
 - [x] Versioned process readiness adapters.
 - [x] Diagnostics and exportable logs.
-- Automated integration tests around lifecycle events.
+- [x] Automated integration tests around lifecycle events.
 
 The first Phase 4 slice adds schema version 4 application-run facts. An unfinished immediately preceding run records only that Halfway did not shut down cleanly. Processes are never reattached or automatically restarted; restored active metadata still becomes Disconnected. Crash detection creates no lifecycle event, alert delivery, notification, unread marker, or terminal message. Transcripts, prompts, partial input, submitted input, environment variables, and secrets remain unpersisted.
 
@@ -71,6 +71,8 @@ The third Phase 4 slice adds a per-live-session FIFO queue for fully submitted u
 The fourth Phase 4 slice gives readiness adapters stable `shell` v1 and `codex` v1 identities, exact catalog selection, and safe rejection of unsupported versions. Runtime launch-profile selection owns adapter construction rather than `MainWindow`. Codex v1 remains conservative while supporting split and ANSI-decorated chunks. Readiness output is bounded in memory and is not persisted.
 
 The fifth Phase 4 slice adds a concurrency-safe in-memory buffer for the newest 256 structured facts and an explicit local schema-version-1 JSON export. Sensitive field categories are excluded at collection and export, credential patterns are redacted twice, and no terminal transcript, prompt, partial or submitted input, environment data, command line, file content, stack dump, key, token, password, or secret is retained. Export never uploads, does not enter SQLite, and cannot affect session ownership, lifecycle, alerts, notifications, unread state, or terminal messages. Schema version remains 4.
+
+The sixth Phase 4 slice adds deterministic integration coverage across the registry, coordinator, readiness adapters, submitted-input queue, durable SQLite ledger, application-run recovery, notifications, transient attention, and diagnostics. Fake terminals use completion signals and write gates rather than sleeps or Codex CLI. Complete sequences cover Running/Waiting transitions, successful and failed input, single and batched completion delivery, reserve/release/retry/commit, restart recovery and deduplication, explicit stop, nonzero exit notification, restore isolation, unclean-run detection, stale ownership, session-bound queued input, and privacy-safe export. Existing real ConPTY round trips remain in the full suite.
 
 ## Possible Later Features
 
