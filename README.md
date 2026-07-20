@@ -63,6 +63,10 @@ Pressing Enter submits the current terminal input to a dedicated in-memory queue
 
 Process readiness adapters expose stable identities: PowerShell uses `shell` v1 and Codex uses `codex` v1. Launch-profile-to-adapter selection is isolated in the runtime layer, and unknown identifiers or versions fail without silently falling back. Codex v1 remains conservative: it requires observed Codex identity plus a safe prompt, supports split and ANSI-decorated output chunks, and resets readiness after successful input. Failed writes do not reset readiness or clear Waiting. Output sampled for readiness remains bounded in memory and is never persisted.
 
+Use **Export diagnostics** in the information bar to write `%LOCALAPPDATA%\Halfway\diagnostics\halfway-diagnostics.json`. Export is explicit and local; Halfway never uploads diagnostics. The versioned JSON contains at most the newest 256 structured application facts in sequence order, including startup/shutdown outcomes, counts, lifecycle states, readiness adapter identity, notification availability, and alert-delivery outcomes. A mandatory export-time redaction pass removes common bearer tokens, keys, passwords, and secrets even though producers are restricted to safe fields. Export failures are shown locally and do not affect live sessions.
+
+Diagnostics are memory-only until the user exports them and are cleared on restart. They never contain terminal output or transcripts, prompts, partial input, submitted user input, alert terminal payloads, environment variables, command lines, file contents, stack dumps, API keys, tokens, passwords, or secrets. They do not create lifecycle events, alerts, notifications, unread state, or terminal messages. SQLite remains at schema version 4 and stores no diagnostic records.
+
 ## Build and run Phase 1
 
 Prerequisites:

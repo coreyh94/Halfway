@@ -26,6 +26,8 @@ public sealed partial class MainWindow : Window
     private readonly SessionAttentionTracker _attention = new();
     private readonly FailureNotificationPolicy _failureNotifications = new();
     private readonly WindowsFailureNotifier _windowsNotifications;
+    private readonly DiagnosticBuffer _diagnostics = new();
+    private readonly DiagnosticExporter _diagnosticExporter = new();
     private IProcessReadinessAdapter _plannerReadiness = RuntimeReadinessAdapterSelection.Create(RuntimeLaunchProfile.PowerShell);
     private AlertInputCoordinator _alerts;
     private readonly object _lifecyclePersistenceGate = new();
@@ -50,6 +52,7 @@ public sealed partial class MainWindow : Window
         _coordinator.LifecycleTransitioned += Coordinator_LifecycleTransitioned;
         _alerts = new AlertInputCoordinator(_plannerReadiness);
         _windowsNotifications = new WindowsFailureNotifier(() => DispatcherQueue.TryEnqueue(Activate));
+        _diagnostics.Record("notification", "availability", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["available"] = _windowsNotifications.IsAvailable.ToString() });
         Activated += MainWindow_Activated;
         Closed += MainWindow_Closed;
     }
@@ -62,11 +65,13 @@ public sealed partial class MainWindow : Window
         {
             var runtimeProfile = string.Equals(Environment.GetEnvironmentVariable("HALFWAY_RUNTIME_LAUNCH"), "codex", StringComparison.OrdinalIgnoreCase) ? LaunchProfile.Codex : LaunchProfile.PowerShell;
             await _store.InitializeAsync();
+            _diagnostics.Record("application", "startup", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["schemaVersion"] = SqliteWorkspaceStore.SchemaVersion.ToString(), ["outcome"] = "initialized" });
             var run = new ApplicationRun(Guid.NewGuid(), DateTimeOffset.UtcNow, null, typeof(App).Assembly.GetName().Version?.ToString() ?? "unknown");
             _applicationRun = await _store.StartApplicationRunAsync(run);
             var resolver = new WorkspaceRestoreResolver(_store);
             var workingDirectory = await resolver.ResolveAsync(Environment.GetEnvironmentVariable("HALFWAY_WORKING_DIRECTORY"), Environment.CurrentDirectory);
             await _catalog.InitializeAsync(workingDirectory, runtimeProfile);
+            _diagnostics.Record("workspace", "restored", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["sessionCount"] = _catalog.Sessions.Count.ToString() });
             await _ledger.RecoverAsync();
             foreach (var session in _catalog.Sessions.OrderBy(x => x.Kind).ThenBy(x => x.DisplayOrder))
                 _registry.Register(new AgentSession(session.Id, session.DisplayName, session.Kind, _catalog.GetParentSessionId(session.Id), session.LastStatus));
@@ -76,6 +81,7 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception exception)
         {
+            RecordFailure("application", "startup-failed", exception);
             ConnectionText.Text = "! INITIALIZATION FAILED";
             var failure = new TextBlock { Text = $"[Unable to initialize Halfway: {exception.Message}]", Foreground = ThemeBrush("ErrorBrush"), TextWrapping = TextWrapping.Wrap };
             PrimaryTerminalHost.Children.Clear(); PrimaryTerminalHost.Children.Add(failure);
@@ -134,12 +140,14 @@ public sealed partial class MainWindow : Window
             await _coordinator.StartAsync(new ManagedSession(metadata.SessionKey, metadata.Id, metadata.DisplayName, metadata.Kind, _catalog.GetParentSessionId(metadata.Id)),
                 RuntimeLaunchAdapterSelection.Create(runtimeProfile),
                 new RuntimeLaunchContext(_catalog.Workspace.WorkingDirectory, new TerminalSize(100,30)), readiness);
+            _diagnostics.Record("session", "started", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["sessionId"] = metadata.Id.ToString(), ["agentKind"] = metadata.Kind.ToString(), ["adapterId"] = readiness.Identity.Identifier, ["adapterVersion"] = readiness.Identity.Version.ToString(), ["outcome"] = "running" });
             if (metadata.Kind == AgentKind.Primary) await QueuePendingAlertsAsync(metadata);
             SetFocusedSession(metadata.Id);
             view.FocusInput();
         }
         catch (Exception exception)
         {
+            RecordFailure("session", "start-failed", exception, metadata.Id);
             await _catalog.UpdateStatusAsync(metadata.Id, AgentStatus.Failed);
             UpdateSessionUi(_catalog.Sessions.Single(x => x.Id == metadata.Id)); RefreshInformationBar();
             view.Append($"[Unable to start {metadata.DisplayName}: {exception.Message}]\n");
@@ -148,8 +156,8 @@ public sealed partial class MainWindow : Window
 
     private async Task StopSessionAsync(SessionMetadata metadata)
     {
-        try { await _coordinator.StopAsync(metadata.SessionKey); }
-        catch (Exception exception) { _views[metadata.Id].Append($"\n[Stop failed: {exception.Message}]\n"); }
+        try { await _coordinator.StopAsync(metadata.SessionKey); _diagnostics.Record("session", "stopped", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["sessionId"] = metadata.Id.ToString(), ["outcome"] = "disconnected" }); }
+        catch (Exception exception) { RecordFailure("session", "stop-failed", exception, metadata.Id); _views[metadata.Id].Append($"\n[Stop failed: {exception.Message}]\n"); }
     }
 
     private async Task SendInputAsync(SessionMetadata metadata, string input)
@@ -192,6 +200,8 @@ public sealed partial class MainWindow : Window
 
     private void Coordinator_LifecycleTransitioned(object? sender, LifecycleTransition transition)
     {
+        if (transition.Event is { } lifecycleEvent)
+            _diagnostics.Record("lifecycle", "transitioned", lifecycleEvent.OccurredAt, new Dictionary<string, string> { ["sessionId"] = transition.Session.Id.ToString(), ["previousState"] = lifecycleEvent.PreviousStatus.ToString(), ["newState"] = lifecycleEvent.NewStatus.ToString() });
         DispatcherQueue.TryEnqueue(() =>
         {
             var notification = _failureNotifications.Evaluate(transition, _isWindowActive, _focusedSessionId);
@@ -241,6 +251,7 @@ public sealed partial class MainWindow : Window
             : _currentBatch is { } batch && batch.ReservationId == alert.EventId ? batch.EventIds : [alert.EventId];
         if (eventIds.Count > 0 && !await _ledger.ReserveAsync(eventIds))
         {
+            _diagnostics.Record("alert", "reservation-skipped", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["sessionId"] = parent.Id.ToString() });
             _alerts.CommitAlertDelivery();
             _currentBatch = null;
             await QueuePendingAlertsAsync(parent);
@@ -250,6 +261,7 @@ public sealed partial class MainWindow : Window
         {
             await _coordinator.WriteAsync(parent.SessionKey, alert.Message + "\r");
             if (eventIds.Count > 0 && !await _ledger.CommitAsync(eventIds)) throw new InvalidOperationException("Alert delivery could not be committed.");
+            _diagnostics.Record("alert", "delivery-committed", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["sessionId"] = parent.Id.ToString(), ["eventCount"] = eventIds.Count.ToString() });
             _alerts.CommitAlertDelivery();
             _currentBatch = null;
             await QueuePendingAlertsAsync(parent);
@@ -257,6 +269,7 @@ public sealed partial class MainWindow : Window
         catch
         {
             if (eventIds.Count > 0) await _ledger.ReleaseAsync(eventIds);
+            _diagnostics.Record("alert", "delivery-released", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["sessionId"] = parent.Id.ToString(), ["eventCount"] = eventIds.Count.ToString() });
             _alerts.ReleaseAlertDelivery();
         }
     }
@@ -421,8 +434,32 @@ public sealed partial class MainWindow : Window
 
     private static SolidColorBrush ThemeBrush(string key) => (SolidColorBrush)Application.Current.Resources[key];
 
+    private async void ExportDiagnostics_Click(object sender, RoutedEventArgs e)
+    {
+        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Halfway", "diagnostics", "halfway-diagnostics.json");
+        try
+        {
+            _diagnostics.Record("diagnostics", "export-requested", DateTimeOffset.UtcNow);
+            await _diagnosticExporter.ExportAsync(path, _diagnostics.Snapshot());
+            ConnectionText.Text = $"EXPORTED {path}";
+        }
+        catch (Exception exception)
+        {
+            RecordFailure("diagnostics", "export-failed", exception);
+            ConnectionText.Text = "! DIAGNOSTIC EXPORT FAILED";
+        }
+    }
+
+    private void RecordFailure(string category, string name, Exception exception, Guid? sessionId = null)
+    {
+        var facts = new Dictionary<string, string> { ["errorType"] = exception.GetType().Name, ["errorMessage"] = exception.Message };
+        if (sessionId is Guid id) facts["sessionId"] = id.ToString();
+        _diagnostics.Record(category, name, DateTimeOffset.UtcNow, facts);
+    }
+
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
+        _diagnostics.Record("application", "shutdown", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["outcome"] = "orderly" });
         _batchDelay?.Cancel(); _batchDelay?.Dispose();
         _windowsNotifications.Dispose();
         _coordinator.DisposeAsync().AsTask().GetAwaiter().GetResult();

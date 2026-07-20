@@ -40,6 +40,8 @@ Display only high-value workspace information:
 
 The bar must not become a dashboard.
 
+An **Export diagnostics** action writes the current bounded, privacy-filtered facts to the explicitly named local diagnostics path. Success shows the path in the information bar; failure shows a local error without interrupting terminal sessions. Export is never automatic and never uploads data.
+
 ## 4. Sidebar
 
 Fixed headings:

@@ -59,7 +59,7 @@ Phase 3 adds deterministic keyboard navigation, bounded in-memory terminal searc
 - [x] Stale live-session detection and reconciliation.
 - [x] Safe in-memory submitted user-input queuing.
 - [x] Versioned process readiness adapters.
-- Diagnostics and exportable logs.
+- [x] Diagnostics and exportable logs.
 - Automated integration tests around lifecycle events.
 
 The first Phase 4 slice adds schema version 4 application-run facts. An unfinished immediately preceding run records only that Halfway did not shut down cleanly. Processes are never reattached or automatically restarted; restored active metadata still becomes Disconnected. Crash detection creates no lifecycle event, alert delivery, notification, unread marker, or terminal message. Transcripts, prompts, partial input, submitted input, environment variables, and secrets remain unpersisted.
@@ -69,6 +69,8 @@ The second Phase 4 slice reconciles each exact coordinator-owned terminal from i
 The third Phase 4 slice adds a per-live-session FIFO queue for fully submitted user input only. Capacity is eight entries including the in-flight write; overflow rejects the newest entry with a visible local error. Queue generations are bound to exact terminal ownership and close on cancellation, stop, or exit, so input never crosses to a sibling or replacement. Partial and submitted input remain unpersisted. Automatic alerts stay separate and retain readiness, partial-input blocking, and durable delivery semantics.
 
 The fourth Phase 4 slice gives readiness adapters stable `shell` v1 and `codex` v1 identities, exact catalog selection, and safe rejection of unsupported versions. Runtime launch-profile selection owns adapter construction rather than `MainWindow`. Codex v1 remains conservative while supporting split and ANSI-decorated chunks. Readiness output is bounded in memory and is not persisted.
+
+The fifth Phase 4 slice adds a concurrency-safe in-memory buffer for the newest 256 structured facts and an explicit local schema-version-1 JSON export. Sensitive field categories are excluded at collection and export, credential patterns are redacted twice, and no terminal transcript, prompt, partial or submitted input, environment data, command line, file content, stack dump, key, token, password, or secret is retained. Export never uploads, does not enter SQLite, and cannot affect session ownership, lifecycle, alerts, notifications, unread state, or terminal messages. Schema version remains 4.
 
 ## Possible Later Features
 

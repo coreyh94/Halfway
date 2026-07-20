@@ -10,6 +10,8 @@ public sealed class WindowsFailureNotifier : IDisposable
     private readonly Action _activated;
     private bool _registered;
 
+    public bool IsAvailable => _registered;
+
     public WindowsFailureNotifier(Action activated)
     {
         _activated = activated;
