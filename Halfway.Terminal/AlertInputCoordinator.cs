@@ -8,8 +8,8 @@ public sealed class AlertInputCoordinator
         "[Halfway Alert!] Runtime completed. Continue orchestration.";
 
     private readonly IProcessReadinessAdapter _readiness;
-    private bool _demonstrationRequested;
-    private bool _demonstrationDelivered;
+    private string? _queuedAlert;
+    private bool _alertDelivered;
 
     public AlertInputCoordinator(IProcessReadinessAdapter readiness)
     {
@@ -18,28 +18,34 @@ public sealed class AlertInputCoordinator
 
     public bool HasPartialUserInput { get; private set; }
 
-    public bool HasQueuedAlert => _demonstrationRequested && !_demonstrationDelivered;
+    public bool HasQueuedAlert => _queuedAlert is not null && !_alertDelivered;
 
-    public bool AlertDelivered => _demonstrationDelivered;
+    public bool AlertDelivered => _alertDelivered;
 
     public void SetUserInput(string input) => HasPartialUserInput = !string.IsNullOrEmpty(input);
 
     public void RequestDemonstrationAlert()
     {
-        if (!_demonstrationDelivered)
+        RequestAlert(DemonstrationAlert);
+    }
+
+    public void RequestAlert(string alert)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(alert);
+        if (!_alertDelivered)
         {
-            _demonstrationRequested = true;
+            _queuedAlert ??= alert;
         }
     }
 
     public string? TakeReadyAlert()
     {
-        if (!_demonstrationRequested || _demonstrationDelivered || HasPartialUserInput || !_readiness.IsReadyForInput)
+        if (_queuedAlert is null || _alertDelivered || HasPartialUserInput || !_readiness.IsReadyForInput)
         {
             return null;
         }
 
-        _demonstrationDelivered = true;
-        return DemonstrationAlert;
+        _alertDelivered = true;
+        return _queuedAlert;
     }
 }

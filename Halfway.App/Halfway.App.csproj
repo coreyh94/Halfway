@@ -24,5 +24,6 @@
   <ItemGroup>
     <ProjectReference Include="..\Halfway.Core\Halfway.Core.csproj" />
     <ProjectReference Include="..\Halfway.Terminal\Halfway.Terminal.csproj" />
+    <ProjectReference Include="..\Halfway.Runtime\Halfway.Runtime.csproj" />
   </ItemGroup>
 </Project>

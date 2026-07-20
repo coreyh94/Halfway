@@ -46,7 +46,7 @@ dotnet build Halfway.App\Halfway.App.csproj --configuration Debug -p:Platform=x6
 dotnet run --project Halfway.App\Halfway.App.csproj --configuration Debug -p:Platform=x64
 ```
 
-Halfway starts one PowerShell session through ConPTY. Use the **Codex** button to replace it with the installed Codex CLI. The working directory defaults to the directory from which Halfway is launched; set `HALFWAY_WORKING_DIRECTORY` to an existing directory to override it.
+Halfway starts a Planner PowerShell session and an independent Runtime PowerShell sub-agent session through ConPTY. Runtime starts in the configured working directory, streams into the Runtime tab, accepts line input, and resizes with its panel. Stopping either session leaves the other session running. Use the **Codex** button to replace Planner with the installed Codex CLI. The working directory defaults to the directory from which Halfway is launched; set `HALFWAY_WORKING_DIRECTORY` to an existing directory to override it.
 
 The **Inject demo alert** button submits exactly one deterministic alert. If user input is partially typed, the alert remains queued until that input is submitted.
 
@@ -55,5 +55,6 @@ The **Inject demo alert** button submits exactly one deterministic alert. If use
 - Terminal output is a bounded 64 KiB raw-text view with common ANSI control sequences removed; it is not a full terminal emulator.
 - Input is line-oriented. Advanced terminal keys, mouse input, search, complete scrollback, copy/paste semantics, and accurate screen-buffer rendering require an established terminal control in a later slice.
 - Codex readiness uses an isolated, deliberately conservative output heuristic and may need adapter updates as Codex output changes.
-- This spike hosts one main session only. Sub-agent tabs remain placeholders.
+- The Runtime tab is the first functional sub-agent tab; UI and Tests tabs remain placeholders.
+- Runtime lifecycle is tracked as queued, running, completed, failed, or disconnected. A successful Runtime exit sends exactly one queued-safe completion alert to Planner.
 - Sessions are not persisted or reattached after Halfway exits.

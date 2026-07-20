@@ -8,6 +8,8 @@ public sealed class SessionRegistry
     public IReadOnlyCollection<AgentSession> Sessions => _sessions.Values;
     public IReadOnlyList<LifecycleEvent> Events => _events;
 
+    public bool Contains(Guid id) => _sessions.ContainsKey(id);
+
     public void Register(AgentSession session)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(session.DisplayName);

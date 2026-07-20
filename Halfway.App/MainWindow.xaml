@@ -61,7 +61,7 @@
                         <TextBlock Text="SUB-AGENTS" FontSize="11" FontWeight="SemiBold" Foreground="#7B8492" Margin="8,28,0,6" />
                         <Button x:Name="RuntimeButton" Click="RuntimeButton_Click" HorizontalContentAlignment="Left" Background="Transparent" Foreground="#B9C0CB" Padding="10,9">
                             <StackPanel Orientation="Horizontal" Spacing="10">
-                                <TextBlock Text="●" Foreground="#7DD3A8" />
+                                <TextBlock x:Name="RuntimeButtonStatus" Text="○" Foreground="#F1C77A" />
                                 <TextBlock Text="Runtime" />
                             </StackPanel>
                         </Button>
@@ -122,9 +122,23 @@
                     </Grid.RowDefinitions>
                     <TextBlock Text="SUB-AGENTS" FontSize="11" FontWeight="SemiBold" Foreground="#7B8492" Margin="4,0,0,12" />
                     <muxc:TabView x:Name="SubAgentTabs" Grid.Row="1" IsAddTabButtonVisible="False" TabWidthMode="Equal" Background="#111318">
-                        <muxc:TabViewItem Header="Runtime ●">
-                            <Border Background="#0A0B0D" Padding="16">
-                                <TextBlock Text="Runtime terminal will appear here." Foreground="#AAB2BF" VerticalAlignment="Center" HorizontalAlignment="Center" />
+                        <muxc:TabViewItem x:Name="RuntimeTab" Header="Runtime ○">
+                            <Border x:Name="RuntimePanel" Background="#0A0B0D" BorderBrush="#272C35" BorderThickness="1" CornerRadius="5" Padding="12" SizeChanged="RuntimePanel_SizeChanged">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
+                                        <TextBlock Text="PowerShell sub-agent" Foreground="#AAB2BF" />
+                                        <TextBlock x:Name="RuntimeStatusText" Text="QUEUED" Foreground="#F1C77A" />
+                                    </StackPanel>
+                                    <ScrollViewer x:Name="RuntimeScrollViewer" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                                        <TextBlock x:Name="RuntimeOutputText" TextWrapping="NoWrap" FontFamily="Cascadia Mono, Consolas" FontSize="13" Foreground="#D5DAE2" IsTextSelectionEnabled="True" />
+                                    </ScrollViewer>
+                                    <TextBox x:Name="RuntimeInputText" Grid.Row="2" Margin="0,8,0,0" FontFamily="Cascadia Mono, Consolas" PlaceholderText="Runtime command and press Enter" KeyDown="RuntimeInputText_KeyDown" />
+                                </Grid>
                             </Border>
                         </muxc:TabViewItem>
                         <muxc:TabViewItem Header="UI ✓">
