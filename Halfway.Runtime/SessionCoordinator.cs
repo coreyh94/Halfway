@@ -50,6 +50,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
         }
         var state = new ManagedSessionState(descriptor, readiness);
         state.Owner = this;
+        state.UserInput = new SubmittedInputQueue((input, token) => WriteSubmittedInputAsync(state, input, token));
         _sessions.Add(descriptor.Key, state);
         Transition(state, AgentStatus.Queued);
 
@@ -106,7 +107,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
     public async Task WriteAsync(string key, string input, CancellationToken cancellationToken = default)
     {
         var state = GetState(key); var terminal = state.Terminal;
-        if (terminal is null) throw new InvalidOperationException($"Session '{key}' is not running.");
+        if (terminal is null) throw StaleOwnership(key);
         if (terminal.Completion.IsCompleted)
         {
             await ReconcileTerminalAsync(state, terminal, CompletionStatus(terminal.Completion)).ConfigureAwait(false);
@@ -125,10 +126,21 @@ public sealed class SessionCoordinator : IAsyncDisposable
         if (state.Descriptor.Status == AgentStatus.Waiting) Transition(state, AgentStatus.Running);
     }
 
+    public Task SubmitUserInputAsync(string key, string input, CancellationToken cancellationToken = default)
+    {
+        var state = GetState(key);
+        lock (state.OwnershipGate)
+        {
+            if (state.Terminal is null || state.Descriptor.Status is not (AgentStatus.Running or AgentStatus.Waiting))
+                return Task.FromException(new SessionInputUnavailableException(key));
+            return state.UserInput.EnqueueAsync(input, cancellationToken);
+        }
+    }
+
     public void Resize(string key, TerminalSize size)
     {
         var state = GetState(key); var terminal = state.Terminal;
-        if (terminal is null) throw new InvalidOperationException($"Session '{key}' is not running.");
+        if (terminal is null) throw StaleOwnership(key);
         if (terminal.Completion.IsCompleted)
         {
             _ = ReconcileTerminalAsync(state, terminal, CompletionStatus(terminal.Completion));
@@ -149,6 +161,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
     {
         var state = GetState(key);
         var terminal = Interlocked.Exchange(ref state.Terminal, null);
+        state.UserInput.Close(new SessionInputUnavailableException(key));
         if (terminal is null)
         {
             if (IsActive(state.Descriptor.Status))
@@ -198,6 +211,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
 
     private async Task ReleaseFailedStartAsync(ManagedSessionState state)
     {
+        state.UserInput.Close(new SessionInputUnavailableException(state.Descriptor.Key));
         var terminal = Interlocked.Exchange(ref state.Terminal, null);
         if (terminal is not null)
         {
@@ -261,6 +275,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
         lock (state.OwnershipGate)
         {
             if (!ReferenceEquals(Interlocked.CompareExchange(ref state.Terminal, null, terminal), terminal)) return;
+            state.UserInput.Close(new SessionInputUnavailableException(state.Descriptor.Key));
             terminal.OutputReceived -= state.OutputHandler;
             terminal.Exited -= state.ExitHandler;
             transition = Transition(state, status);
@@ -296,6 +311,27 @@ public sealed class SessionCoordinator : IAsyncDisposable
     private static KeyNotFoundException StaleOwnership(string key) =>
         new($"Session '{key}' no longer has live terminal ownership.");
 
+    private async Task WriteSubmittedInputAsync(ManagedSessionState state, string input, CancellationToken cancellationToken)
+    {
+        ITerminalSession terminal;
+        lock (state.OwnershipGate)
+        {
+            terminal = state.Terminal ?? throw new SessionInputUnavailableException(state.Descriptor.Key);
+            if (state.Descriptor.Status is not (AgentStatus.Running or AgentStatus.Waiting) || terminal.Completion.IsCompleted)
+                throw new SessionInputUnavailableException(state.Descriptor.Key);
+        }
+
+        await terminal.WriteAsync(input, cancellationToken).ConfigureAwait(false);
+
+        lock (state.OwnershipGate)
+        {
+            if (!ReferenceEquals(state.Terminal, terminal) || state.Descriptor.Status is not (AgentStatus.Running or AgentStatus.Waiting))
+                throw new SessionInputUnavailableException(state.Descriptor.Key);
+            state.Readiness?.ObserveInputSubmitted();
+            if (state.Descriptor.Status == AgentStatus.Waiting) Transition(state, AgentStatus.Running);
+        }
+    }
+
     private LifecycleTransition Transition(ManagedSessionState state, AgentStatus status)
     {
         var transition = _registry.Transition(state.Descriptor.Id, status);
@@ -324,6 +360,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
         public object OwnershipGate { get; } = new();
         public IProcessReadinessAdapter? Readiness { get; }
         public Task CompletionWatcher { get; set; } = Task.CompletedTask;
+        public SubmittedInputQueue UserInput { get; set; } = null!;
         public EventHandler<string> OutputHandler { get; }
         public EventHandler<TerminalExit> ExitHandler { get; }
     }

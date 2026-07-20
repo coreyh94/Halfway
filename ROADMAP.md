@@ -57,7 +57,7 @@ Phase 3 adds deterministic keyboard navigation, bounded in-memory terminal searc
 
 - [x] Crash-state detection and clean shutdown tracking.
 - [x] Stale live-session detection and reconciliation.
-- Safe input queuing.
+- [x] Safe in-memory submitted user-input queuing.
 - Codex adapter versioning.
 - Diagnostics and exportable logs.
 - Automated integration tests around lifecycle events.
@@ -65,6 +65,8 @@ Phase 3 adds deterministic keyboard navigation, bounded in-memory terminal searc
 The first Phase 4 slice adds schema version 4 application-run facts. An unfinished immediately preceding run records only that Halfway did not shut down cleanly. Processes are never reattached or automatically restarted; restored active metadata still becomes Disconnected. Crash detection creates no lifecycle event, alert delivery, notification, unread marker, or terminal message. Transcripts, prompts, partial input, submitted input, environment variables, and secrets remain unpersisted.
 
 The second Phase 4 slice reconciles each exact coordinator-owned terminal from its exit event and completion task. Zero, nonzero, cancelled, explicit-stop, and missing-exit outcomes retain deterministic Completed, Failed, or Disconnected mapping. Ownership release is idempotent, stale writes and resizes fail, and duplicate callbacks cannot create duplicate lifecycle events or completion alerts. No process scan, PID adoption, reattachment, automatic restart, or reliability-generated terminal message is used.
+
+The third Phase 4 slice adds a per-live-session FIFO queue for fully submitted user input only. Capacity is eight entries including the in-flight write; overflow rejects the newest entry with a visible local error. Queue generations are bound to exact terminal ownership and close on cancellation, stop, or exit, so input never crosses to a sibling or replacement. Partial and submitted input remain unpersisted. Automatic alerts stay separate and retain readiness, partial-input blocking, and durable delivery semantics.
 
 ## Possible Later Features
 

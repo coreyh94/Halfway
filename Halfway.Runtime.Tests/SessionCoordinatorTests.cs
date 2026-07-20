@@ -96,6 +96,67 @@ public sealed class SessionCoordinatorTests
     }
 
     [Fact]
+    public async Task SubmittedInputIsSessionIsolatedAndChangesWaitingOnlyAfterSuccessfulWrite()
+    {
+        var factory = new FakeFactory(); var coordinator = CreateCoordinator(factory, out var plannerId, out var runtimeId);
+        await coordinator.StartAsync(Descriptor("planner", plannerId, "Planner", null), Options(), new ShellReadinessAdapter());
+        await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options(), new ShellReadinessAdapter());
+        factory.Sessions[0].EmitOutput("PS> "); factory.Sessions[1].EmitOutput("PS> ");
+
+        await Task.WhenAll(
+            coordinator.SubmitUserInputAsync("planner", "planner input\r"),
+            coordinator.SubmitUserInputAsync("runtime", "runtime input\r"));
+
+        Assert.Equal(["planner input\r"], factory.Sessions[0].Inputs);
+        Assert.Equal(["runtime input\r"], factory.Sessions[1].Inputs);
+        Assert.Equal(AgentStatus.Running, coordinator.Get("planner").Status);
+        Assert.Equal(AgentStatus.Running, coordinator.Get("runtime").Status);
+
+        factory.Sessions[1].EmitOutput("PS> "); factory.Sessions[1].WriteException = new IOException("write failed");
+        await Assert.ThrowsAsync<IOException>(() => coordinator.SubmitUserInputAsync("runtime", "failed\r"));
+        Assert.Equal(AgentStatus.Waiting, coordinator.Get("runtime").Status);
+    }
+
+    [Fact]
+    public async Task SubmittedInputQueueIsBoundedAndPreservesPerSessionOrder()
+    {
+        var factory = new FakeFactory(); var coordinator = CreateCoordinator(factory, out var plannerId, out var runtimeId);
+        await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options());
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        factory.Sessions[0].WriteGate = release;
+
+        var accepted = Enumerable.Range(0, SubmittedInputQueue.DefaultCapacity)
+            .Select(index => coordinator.SubmitUserInputAsync("runtime", $"input-{index}\r"))
+            .ToArray();
+        await Assert.ThrowsAsync<SubmittedInputQueueFullException>(() => coordinator.SubmitUserInputAsync("runtime", "rejected\r"));
+        release.TrySetResult(); await Task.WhenAll(accepted);
+
+        Assert.Equal(Enumerable.Range(0, SubmittedInputQueue.DefaultCapacity).Select(index => $"input-{index}\r"), factory.Sessions[0].Inputs);
+    }
+
+    [Fact]
+    public async Task ExitResolvesQueuedInputAndNeverDeliversItToReplacementOwnership()
+    {
+        var factory = new FakeFactory(); var registry = new SessionRegistry(); var plannerId = Guid.NewGuid(); var runtimeId = Guid.NewGuid();
+        registry.Register(new AgentSession(plannerId, "Planner", AgentKind.Primary, null));
+        var coordinator = new SessionCoordinator(factory, registry); var descriptor = Descriptor("runtime", runtimeId, "Runtime", plannerId);
+        await coordinator.StartAsync(descriptor, Options());
+        factory.Sessions[0].WriteGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = coordinator.SubmitUserInputAsync("runtime", "old-first\r");
+        var second = coordinator.SubmitUserInputAsync("runtime", "old-second\r");
+        var disconnected = StateSignal(coordinator, AgentStatus.Disconnected);
+
+        factory.Sessions[0].EmitExit(0, true); await disconnected;
+        await Assert.ThrowsAsync<SessionInputUnavailableException>(() => first);
+        await Assert.ThrowsAsync<SessionInputUnavailableException>(() => second);
+        await coordinator.StartAsync(descriptor, Options());
+
+        Assert.Empty(factory.Sessions[1].Inputs);
+        await coordinator.SubmitUserInputAsync("runtime", "new\r");
+        Assert.Equal(["new\r"], factory.Sessions[1].Inputs);
+    }
+
+    [Fact]
     public async Task Runtime_launch_adapter_selects_options_before_factory_start()
     {
         var factory = new FakeFactory();
@@ -299,11 +360,18 @@ public sealed class SessionCoordinatorTests
         public bool IsRunning { get; private set; } = true;
         public bool IsDisposed { get; private set; }
         public Exception? WriteException { get; set; }
+        public TaskCompletionSource? WriteGate { get; set; }
+        public List<string> Inputs { get; } = [];
         public event EventHandler<string>? OutputReceived;
         public event EventHandler<TerminalExit>? Exited;
         public int ProcessId => processId;
         public Task Completion => _completion.Task;
-        public ValueTask WriteAsync(string input, CancellationToken cancellationToken = default) => WriteException is null ? ValueTask.CompletedTask : ValueTask.FromException(WriteException);
+        public async ValueTask WriteAsync(string input, CancellationToken cancellationToken = default)
+        {
+            if (WriteException is not null) throw WriteException;
+            Inputs.Add(input);
+            if (WriteGate is not null) await WriteGate.Task.WaitAsync(cancellationToken);
+        }
         public void Resize(TerminalSize size) { }
         public Task StopAsync(CancellationToken cancellationToken = default) { EmitExit(0, true); return Task.CompletedTask; }
         public ValueTask DisposeAsync() { IsRunning = false; IsDisposed = true; _completion.TrySetResult(); return ValueTask.CompletedTask; }

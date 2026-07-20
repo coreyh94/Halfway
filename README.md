@@ -59,6 +59,8 @@ Live sessions transition from Running to Waiting when their isolated PowerShell 
 
 `SessionCoordinator` also observes the completion task of each exact terminal instance it owns. If ownership ends without an exit callback, a normal or cancelled completion reconciles once to Disconnected and a faulted completion reconciles once to Failed. Exit callbacks remain authoritative when present: zero exits become Completed, nonzero exits become Failed, and explicit stops or cancelled exits become Disconnected. The first ownership-ending fact atomically releases that exact terminal, so repeated callbacks, stop/exit races, writes, and resizes cannot keep or revive stale ownership. Reconciliation never scans processes, uses persisted status as liveness, reattaches, restarts, or generates a terminal message or duplicate completion alert.
 
+Pressing Enter submits the current terminal input to a dedicated in-memory queue for that exact live session. Each queue holds at most eight accepted submissions, including an in-flight write, and preserves FIFO order. If full, the newest submission is rejected with a local input error; older accepted input is not dropped. Completed, Failed, Disconnected, and non-owned sessions reject submissions, while stop, exit, cancellation, or ownership replacement resolves queued work without replay to another terminal. Waiting changes to Running only after its submitted write succeeds; failed writes leave Waiting unchanged. Partial text is never queued, and queued or submitted user input is never persisted or restored. Automatic Halfway alerts remain a separate channel governed by readiness, partial-input blocking, and durable reserve/commit/release rules.
+
 ## Build and run Phase 1
 
 Prerequisites:

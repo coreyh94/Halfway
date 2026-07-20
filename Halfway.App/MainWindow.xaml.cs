@@ -157,7 +157,7 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            await _coordinator.WriteAsync(metadata.SessionKey, input + "\r");
+            await _coordinator.SubmitUserInputAsync(metadata.SessionKey, input + "\r");
             if (metadata.Kind == AgentKind.Primary) await TryDeliverAlertAsync(metadata);
         }
         catch (Exception exception) { _views[metadata.Id].Append($"\n[Input failed: {exception.Message}]\n"); }

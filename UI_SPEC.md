@@ -101,6 +101,7 @@ Example:
 - A failed sub-agent remains visually prominent.
 - Status changes must update without requiring manual refresh.
 - A terminal whose live coordinator ownership ends must stop displaying Running or Waiting; it reconciles once to Completed, Failed, or Disconnected from owned completion facts without automatic restart.
+- Pressing Enter submits only that terminal's complete input through an eight-entry FIFO queue. Overflow rejects the newest submission with a local error; queued input is cancelled on session exit and is never replayed to another session or after restart.
 
 ## 8. Alert Presentation
 
