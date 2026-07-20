@@ -54,7 +54,7 @@ Halfway.exe
 The implementation separates five concrete ownership layers:
 
 ```text
-SqliteWorkspaceStore -> durable workspace/session metadata, lifecycle events and alert-delivery facts
+SqliteWorkspaceStore -> durable workspace/session metadata, lifecycle events, alert deliveries and app-run facts
 WorkspaceCatalog     -> loaded metadata, creation, selection and persisted status
 DurableAlertLedger   -> focused event/delivery operations and restart recovery
 SessionCoordinator   -> live ConPTY ownership, output, input, resize and exit
@@ -77,15 +77,17 @@ Application-level light and dark theme dictionaries define semantic colors for w
 
 ### Persistence and restore
 
-Schema version 3 preserves the version 1 `Workspaces` and `Sessions` data and version 2 `LifecycleEvents` and `AlertDeliveries`. It adds `AgentRelationships`, transactionally backfills existing non-null parent links, and enforces that parent and child belong to the same workspace. Foreign keys are enabled, and `PRAGMA user_version` advances only after migration succeeds. Lifecycle events contain stable IDs, session/parent identity, the status transition, occurrence time, and eligibility. Delivery records contain only the deterministic message and `Pending`, `Reserved`, or `Delivered` state with reservation, delivery, and update timestamps.
+Schema version 4 preserves the version 1 `Workspaces` and `Sessions` data, version 2 `LifecycleEvents` and `AlertDeliveries`, and version 3 `AgentRelationships`. The version 3 migration transactionally backfills existing non-null parent links and enforces same-workspace relationships. The version 4 migration transactionally adds `ApplicationRuns`, containing only a stable run ID, start time, optional clean-shutdown time, and application version. Foreign keys are enabled, and `PRAGMA user_version` advances only after each migration succeeds. Lifecycle events contain stable IDs, session/parent identity, the status transition, occurrence time, and eligibility. Delivery records contain only the deterministic message and `Pending`, `Reserved`, or `Delivered` state with reservation, delivery, and update timestamps.
+
+After SQLite initialization succeeds, startup atomically reads the immediately preceding application run and inserts the current run. An absent clean-shutdown timestamp means only that Halfway itself did not finish an orderly shutdown. It is not evidence that a terminal process survived. A run is marked clean after owned sessions stop and queued lifecycle persistence completes during normal window close. Crash detection does not change workspace/session metadata, create lifecycle or delivery facts, send notifications, create unread state, reattach or restart processes, or generate terminal input. Because only the immediately preceding run is evaluated, an older unfinished run is not repeatedly reported after a later clean run.
 
 New sub-agent creation inserts session metadata and its relationship in one transaction. `WorkspaceCatalog` loads and validates exactly one registered primary parent for every sub-agent, and that explicit relationship supplies live registry, coordinator, lifecycle-event, and alert-routing identity. The legacy `Sessions.ParentSessionId` value remains as compatible metadata and must agree with the registered relationship.
 
-The production database is `%LOCALAPPDATA%\Halfway\halfway.db`. It stores deterministic eligible alert messages but no terminal output, transcripts, prompts, secrets, process handles, or process IDs.
+The production database is `%LOCALAPPDATA%\Halfway\halfway.db`. It stores deterministic eligible alert messages but no terminal transcripts or output, prompts, partial input, submitted user input, environment variables, API keys, tokens, secrets, process handles, or process IDs.
 
-On first run, the catalog creates Planner and Runtime metadata and selects both. On restore, stable IDs and selection are reused. Queued, Running, and Waiting metadata is normalized to Disconnected because no previous process is considered alive. Completed, Failed, and Disconnected remain visible. The selected Planner and sub-agent start as fresh processes; other restored sessions require an explicit Start/Restart. Halfway never reattaches to an old process or creates an event solely because metadata was restored.
+On first run, the catalog creates Planner and Runtime metadata and selects both. On restore, stable IDs and selection are reused. Queued, Running, and Waiting metadata is normalized to Disconnected because no previous process is considered alive. Completed, Failed, and Disconnected remain visible. The selected Planner and sub-agent start as fresh processes; other restored sessions require an explicit Start/Restart. Halfway never reattaches to an old process, automatically restarts a session because a crash was detected, or creates an event solely because metadata was restored. Reliability facts never manufacture terminal messages.
 
-At startup, `WorkspaceRestoreResolver` chooses a working directory in deterministic priority order: a valid explicit environment override, an already-known current directory, the most recently opened workspace when its directory still exists, then the current directory. Catalog initialization updates the workspace activity timestamp without changing session status or creating lifecycle or delivery facts. This uses the existing schema version 3 workspace metadata and does not persist layout content, terminal output, prompts, partial input, process identity, or secrets.
+At startup, `WorkspaceRestoreResolver` chooses a working directory in deterministic priority order: a valid explicit environment override, an already-known current directory, the most recently opened workspace when its directory still exists, then the current directory. Catalog initialization updates the workspace activity timestamp without changing session status or creating lifecycle or delivery facts. This uses the unchanged workspace metadata and does not persist layout content, terminal output, prompts, partial input, process identity, or secrets.
 
 At startup, stale `Reserved` deliveries return to `Pending`. Pending alerts remain eligible but are not sent until the matching parent Planner is newly running, its readiness adapter reports safe input, and no partial input exists. Reservation is an atomic compare-and-update; a successful terminal write is followed by a `Delivered` commit, while failure or cancellation releases the record to `Pending`. Delivered records never become eligible again.
 
@@ -210,6 +212,7 @@ Suggested tables:
 - AgentRelationships.
 - LifecycleEvents.
 - AlertDeliveries.
+- ApplicationRuns.
 - UserSettings.
 
 Codex conversation content should not be copied into SQLite by default.

@@ -9,13 +9,116 @@ public sealed class PersistenceTests : IAsyncDisposable
     private string Database => Path.Combine(_directory, "test.db");
 
     [Fact]
-    public async Task EmptyDatabaseInitializesAndReopensAtVersionThree()
+    public async Task EmptyDatabaseInitializesAndReopensAtVersionFour()
     {
         await using (var store = new SqliteWorkspaceStore(Database)) await store.InitializeAsync();
         await using var reopened = new SqliteWorkspaceStore(Database); await reopened.InitializeAsync();
         await using var connection = new SqliteConnection($"Data Source={Database}"); await connection.OpenAsync();
         await using var command = connection.CreateCommand(); command.CommandText = "PRAGMA user_version;";
-        Assert.Equal(3L, await command.ExecuteScalarAsync());
+        Assert.Equal(4L, await command.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task ApplicationRunStartsAndCompletesCleanly()
+    {
+        var startedAt = DateTimeOffset.UnixEpoch.AddHours(1);
+        var stoppedAt = startedAt.AddMinutes(5);
+        var run = new ApplicationRun(Guid.NewGuid(), startedAt, null, "1.2.3");
+        await using var store = new SqliteWorkspaceStore(Database); await store.InitializeAsync();
+
+        var start = await store.StartApplicationRunAsync(run);
+        Assert.Null(start.PreviousRun);
+        Assert.False(start.PreviousRunWasUnclean);
+        Assert.True(await store.CompleteApplicationRunAsync(run.Id, stoppedAt));
+        Assert.False(await store.CompleteApplicationRunAsync(run.Id, stoppedAt.AddSeconds(1)));
+
+        var saved = Assert.Single(await store.LoadApplicationRunsAsync());
+        Assert.Equal(run with { CleanShutdownAtUtc = stoppedAt }, saved);
+        Assert.True(saved.EndedCleanly);
+    }
+
+    [Fact]
+    public async Task ReopeningDetectsOnlyAnUnfinishedImmediatelyPreviousRun()
+    {
+        var first = new ApplicationRun(Guid.NewGuid(), DateTimeOffset.UnixEpoch.AddHours(1), null, "1.0");
+        await using (var store = new SqliteWorkspaceStore(Database))
+        {
+            await store.InitializeAsync();
+            await store.StartApplicationRunAsync(first);
+        }
+
+        var second = new ApplicationRun(Guid.NewGuid(), DateTimeOffset.UnixEpoch.AddHours(2), null, "1.1");
+        await using (var reopened = new SqliteWorkspaceStore(Database))
+        {
+            await reopened.InitializeAsync();
+            var detected = await reopened.StartApplicationRunAsync(second);
+            Assert.True(detected.PreviousRunWasUnclean);
+            Assert.Equal(first, detected.PreviousRun);
+            Assert.True(await reopened.CompleteApplicationRunAsync(second.Id, second.StartedAtUtc.AddMinutes(1)));
+        }
+
+        await using var thirdStore = new SqliteWorkspaceStore(Database); await thirdStore.InitializeAsync();
+        var third = new ApplicationRun(Guid.NewGuid(), DateTimeOffset.UnixEpoch.AddHours(3), null, "1.2");
+        var cleanPrevious = await thirdStore.StartApplicationRunAsync(third);
+        Assert.False(cleanPrevious.PreviousRunWasUnclean);
+        Assert.Equal(second.Id, cleanPrevious.PreviousRun!.Id);
+        Assert.Equal([first.Id, second.Id, third.Id], (await thirdStore.LoadApplicationRunsAsync()).Select(run => run.Id));
+    }
+
+    [Fact]
+    public async Task CrashDetectionDoesNotChangeLifecycleAlertsOrRestoredActiveStatus()
+    {
+        Guid parentId, childId, reservedId, deliveredId;
+        await using (var store = new SqliteWorkspaceStore(Database))
+        {
+            var catalog = new WorkspaceCatalog(store); await catalog.InitializeAsync(_directory, LaunchProfile.PowerShell);
+            parentId = catalog.SelectedPrimary!.Id; childId = catalog.SelectedSubAgent!.Id;
+            await catalog.UpdateStatusAsync(childId, AgentStatus.Running);
+            var reserved = Event(childId, parentId); reservedId = reserved.Id;
+            await store.EnsureAlertDeliveryAsync(reserved, "reserved"); await store.ReserveAlertAsync(reservedId, DateTimeOffset.UtcNow);
+            var delivered = Event(childId, parentId); deliveredId = delivered.Id;
+            await store.EnsureAlertDeliveryAsync(delivered, "delivered"); await store.ReserveAlertAsync(deliveredId, DateTimeOffset.UtcNow); await store.CommitAlertAsync(deliveredId, DateTimeOffset.UtcNow);
+            await store.StartApplicationRunAsync(new ApplicationRun(Guid.NewGuid(), DateTimeOffset.UnixEpoch, null, "1.0"));
+        }
+
+        await using var reopened = new SqliteWorkspaceStore(Database); var restored = new WorkspaceCatalog(reopened);
+        await restored.InitializeAsync(_directory, LaunchProfile.PowerShell);
+        var detected = await reopened.StartApplicationRunAsync(new ApplicationRun(Guid.NewGuid(), DateTimeOffset.UnixEpoch.AddHours(1), null, "1.1"));
+        Assert.True(detected.PreviousRunWasUnclean);
+        Assert.Equal(AgentStatus.Disconnected, restored.Sessions.Single(session => session.Id == childId).LastStatus);
+        Assert.Equal(1, await reopened.RecoverStaleReservationsAsync(DateTimeOffset.UtcNow));
+        Assert.Equal(reservedId, Assert.Single(await reopened.LoadPendingAlertsAsync(parentId)).EventId);
+        Assert.Equal(AlertDeliveryState.Delivered, (await reopened.FindAlertDeliveryAsync(deliveredId))!.State);
+        Assert.Equal(2L, await ScalarAsync("SELECT COUNT(*) FROM LifecycleEvents;"));
+        Assert.Equal(2L, await ScalarAsync("SELECT COUNT(*) FROM AlertDeliveries;"));
+    }
+
+    [Fact]
+    public async Task VersionThreeMigrationPreservesAllExistingDataAndAddsApplicationRuns()
+    {
+        Guid workspaceId, parentId, childId, eventId;
+        await using (var store = new SqliteWorkspaceStore(Database))
+        {
+            var catalog = new WorkspaceCatalog(store); await catalog.InitializeAsync(_directory, LaunchProfile.Codex);
+            workspaceId = catalog.Workspace.Id; parentId = catalog.SelectedPrimary!.Id; childId = catalog.SelectedSubAgent!.Id;
+            var lifecycleEvent = Event(childId, parentId); eventId = lifecycleEvent.Id;
+            await store.EnsureAlertDeliveryAsync(lifecycleEvent, "preserved");
+        }
+        await using (var connection = new SqliteConnection($"Data Source={Database}"))
+        {
+            await connection.OpenAsync(); await using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE ApplicationRuns; PRAGMA user_version=3;";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using var migrated = new SqliteWorkspaceStore(Database); await migrated.InitializeAsync();
+        Assert.Equal(workspaceId, (await migrated.FindWorkspaceAsync(_directory))!.Id);
+        Assert.Equal([parentId, childId], (await migrated.LoadSessionsAsync(workspaceId)).Select(session => session.Id));
+        Assert.Equal(childId, Assert.Single(await migrated.LoadRelationshipsAsync(workspaceId)).ChildSessionId);
+        Assert.Equal(eventId, (await migrated.FindLifecycleEventAsync(eventId))!.Id);
+        Assert.Equal("preserved", (await migrated.FindAlertDeliveryAsync(eventId))!.Message);
+        Assert.Empty(await migrated.LoadApplicationRunsAsync());
+        Assert.Equal(4L, await ScalarAsync("PRAGMA user_version;"));
     }
 
     [Fact]
@@ -85,7 +188,9 @@ public sealed class PersistenceTests : IAsyncDisposable
         await using (var store = new SqliteWorkspaceStore(Database)) await store.InitializeAsync();
         await using var connection = new SqliteConnection($"Data Source={Database}"); await connection.OpenAsync(); await using var command = connection.CreateCommand();
         command.CommandText = "SELECT group_concat(sql, ' ') FROM sqlite_master WHERE sql IS NOT NULL;"; var schema = ((string)(await command.ExecuteScalarAsync())!).ToLowerInvariant();
-        Assert.DoesNotContain("transcript", schema); Assert.DoesNotContain("prompt", schema); Assert.DoesNotContain("secret", schema); Assert.DoesNotContain("terminaloutput", schema);
+        Assert.DoesNotContain("transcript", schema); Assert.DoesNotContain("prompt", schema); Assert.DoesNotContain("partialinput", schema); Assert.DoesNotContain("submittedinput", schema);
+        Assert.DoesNotContain("environment", schema); Assert.DoesNotContain("apikey", schema); Assert.DoesNotContain("token", schema); Assert.DoesNotContain("secret", schema);
+        Assert.DoesNotContain("terminaloutput", schema); Assert.DoesNotContain("processid", schema); Assert.DoesNotContain("processhandle", schema);
     }
 
     [Fact]
@@ -157,6 +262,13 @@ public sealed class PersistenceTests : IAsyncDisposable
     }
 
     public ValueTask DisposeAsync() { if (Directory.Exists(_directory)) Directory.Delete(_directory, true); return ValueTask.CompletedTask; }
+
+    private async Task<long> ScalarAsync(string commandText)
+    {
+        await using var connection = new SqliteConnection($"Data Source={Database}"); await connection.OpenAsync();
+        await using var command = connection.CreateCommand(); command.CommandText = commandText;
+        return (long)(await command.ExecuteScalarAsync())!;
+    }
 
     private static LifecycleEvent Event(Guid sessionId, Guid parentId) => new(Guid.NewGuid(), sessionId, parentId, AgentStatus.Running, AgentStatus.Completed, DateTimeOffset.UtcNow, true);
 }

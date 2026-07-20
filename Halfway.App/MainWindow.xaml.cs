@@ -36,6 +36,7 @@ public sealed partial class MainWindow : Window
     private bool _syncingSelection;
     private Guid? _focusedSessionId;
     private bool _isWindowActive;
+    private ApplicationRunStart? _applicationRun;
 
     public MainWindow()
     {
@@ -61,6 +62,8 @@ public sealed partial class MainWindow : Window
         {
             var runtimeProfile = string.Equals(Environment.GetEnvironmentVariable("HALFWAY_RUNTIME_LAUNCH"), "codex", StringComparison.OrdinalIgnoreCase) ? LaunchProfile.Codex : LaunchProfile.PowerShell;
             await _store.InitializeAsync();
+            var run = new ApplicationRun(Guid.NewGuid(), DateTimeOffset.UtcNow, null, typeof(App).Assembly.GetName().Version?.ToString() ?? "unknown");
+            _applicationRun = await _store.StartApplicationRunAsync(run);
             var resolver = new WorkspaceRestoreResolver(_store);
             var workingDirectory = await resolver.ResolveAsync(Environment.GetEnvironmentVariable("HALFWAY_WORKING_DIRECTORY"), Environment.CurrentDirectory);
             await _catalog.InitializeAsync(workingDirectory, runtimeProfile);
@@ -427,6 +430,8 @@ public sealed partial class MainWindow : Window
         Task persistence;
         lock (_lifecyclePersistenceGate) persistence = _lifecyclePersistence;
         persistence.GetAwaiter().GetResult();
+        if (_applicationRun is { } run)
+            _store.CompleteApplicationRunAsync(run.CurrentRun.Id, DateTimeOffset.UtcNow).GetAwaiter().GetResult();
         _store.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 

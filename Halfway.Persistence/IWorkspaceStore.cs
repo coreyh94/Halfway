@@ -5,6 +5,9 @@ namespace Halfway.Persistence;
 public interface IWorkspaceStore : IAsyncDisposable
 {
     Task InitializeAsync(CancellationToken cancellationToken = default);
+    Task<ApplicationRunStart> StartApplicationRunAsync(ApplicationRun applicationRun, CancellationToken cancellationToken = default);
+    Task<bool> CompleteApplicationRunAsync(Guid runId, DateTimeOffset cleanShutdownAtUtc, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ApplicationRun>> LoadApplicationRunsAsync(CancellationToken cancellationToken = default);
     Task<WorkspaceMetadata?> FindWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default);
     Task<WorkspaceMetadata?> FindMostRecentWorkspaceAsync(CancellationToken cancellationToken = default);
     Task InsertWorkspaceAsync(WorkspaceMetadata workspace, CancellationToken cancellationToken = default);

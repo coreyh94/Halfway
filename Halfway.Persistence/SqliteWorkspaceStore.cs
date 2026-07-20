@@ -6,7 +6,7 @@ namespace Halfway.Persistence;
 
 public sealed class SqliteWorkspaceStore : IWorkspaceStore
 {
-    public const int SchemaVersion = 3;
+    public const int SchemaVersion = 4;
     private readonly SqliteConnection _connection;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private bool _disposed;
@@ -93,7 +93,64 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
                 PRAGMA user_version = 3;
                 """, cancellationToken, transaction);
             await transaction.CommitAsync(cancellationToken);
+            version = 3;
         }
+        if (version == 3)
+        {
+            await using var transaction = await _connection.BeginTransactionAsync(cancellationToken);
+            await ExecuteAsync("""
+                CREATE TABLE IF NOT EXISTS ApplicationRuns (
+                    Id TEXT PRIMARY KEY,
+                    StartedAtUtc TEXT NOT NULL,
+                    CleanShutdownAtUtc TEXT NULL,
+                    ApplicationVersion TEXT NOT NULL);
+                PRAGMA user_version = 4;
+                """, cancellationToken, transaction);
+            await transaction.CommitAsync(cancellationToken);
+        }
+    }, cancellationToken);
+
+    public Task<ApplicationRunStart> StartApplicationRunAsync(ApplicationRun applicationRun, CancellationToken cancellationToken = default) => LockedAsync(async () =>
+    {
+        if (applicationRun.CleanShutdownAtUtc is not null)
+            throw new ArgumentException("A new application run cannot already have a clean shutdown timestamp.", nameof(applicationRun));
+        ArgumentException.ThrowIfNullOrWhiteSpace(applicationRun.ApplicationVersion);
+
+        await using var transaction = await _connection.BeginTransactionAsync(cancellationToken);
+        ApplicationRun? previousRun;
+        await using (var previousCommand = Command("SELECT Id,StartedAtUtc,CleanShutdownAtUtc,ApplicationVersion FROM ApplicationRuns ORDER BY StartedAtUtc DESC,Id DESC LIMIT 1;"))
+        {
+            previousCommand.Transaction = (SqliteTransaction)transaction;
+            await using var reader = await previousCommand.ExecuteReaderAsync(cancellationToken);
+            previousRun = await reader.ReadAsync(cancellationToken) ? ReadApplicationRun(reader) : null;
+        }
+        await using (var insertCommand = Command("INSERT INTO ApplicationRuns(Id,StartedAtUtc,CleanShutdownAtUtc,ApplicationVersion) VALUES($id,$started,NULL,$version);"))
+        {
+            insertCommand.Transaction = (SqliteTransaction)transaction;
+            insertCommand.Parameters.AddWithValue("$id", applicationRun.Id.ToString());
+            insertCommand.Parameters.AddWithValue("$started", Format(applicationRun.StartedAtUtc));
+            insertCommand.Parameters.AddWithValue("$version", applicationRun.ApplicationVersion);
+            await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return new ApplicationRunStart(applicationRun, previousRun);
+    }, cancellationToken);
+
+    public Task<bool> CompleteApplicationRunAsync(Guid runId, DateTimeOffset cleanShutdownAtUtc, CancellationToken cancellationToken = default) => LockedAsync(async () =>
+    {
+        await using var command = Command("UPDATE ApplicationRuns SET CleanShutdownAtUtc=$stopped WHERE Id=$id AND CleanShutdownAtUtc IS NULL;");
+        command.Parameters.AddWithValue("$id", runId.ToString());
+        command.Parameters.AddWithValue("$stopped", Format(cleanShutdownAtUtc));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }, cancellationToken);
+
+    public Task<IReadOnlyList<ApplicationRun>> LoadApplicationRunsAsync(CancellationToken cancellationToken = default) => LockedAsync(async () =>
+    {
+        await using var command = Command("SELECT Id,StartedAtUtc,CleanShutdownAtUtc,ApplicationVersion FROM ApplicationRuns ORDER BY StartedAtUtc,Id;");
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var runs = new List<ApplicationRun>();
+        while (await reader.ReadAsync(cancellationToken)) runs.Add(ReadApplicationRun(reader));
+        return (IReadOnlyList<ApplicationRun>)runs;
     }, cancellationToken);
 
     public Task<WorkspaceMetadata?> FindWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) => LockedAsync(async () =>
@@ -297,6 +354,7 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
     private static SessionMetadata ReadSession(SqliteDataReader r) { var status=(AgentStatus)r.GetInt32(8); if(status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting) status=AgentStatus.Disconnected; return new(Guid.Parse(r.GetString(0)),Guid.Parse(r.GetString(1)),r.GetString(2),r.GetString(3),(AgentKind)r.GetInt32(4),NullableGuid(r,5),(LaunchProfile)r.GetInt32(6),r.GetInt32(7),status,DateTimeOffset.Parse(r.GetString(9),CultureInfo.InvariantCulture),DateTimeOffset.Parse(r.GetString(10),CultureInfo.InvariantCulture)); }
     private static LifecycleEvent ReadLifecycleEvent(SqliteDataReader r) => new(Guid.Parse(r.GetString(0)),Guid.Parse(r.GetString(1)),NullableGuid(r,2),(AgentStatus)r.GetInt32(3),(AgentStatus)r.GetInt32(4),DateTimeOffset.Parse(r.GetString(5),CultureInfo.InvariantCulture),r.GetInt32(6) != 0);
     private static AlertDelivery ReadAlertDelivery(SqliteDataReader r) => new(Guid.Parse(r.GetString(0)),Guid.Parse(r.GetString(1)),r.GetString(2),r.GetString(3),(AlertDeliveryState)r.GetInt32(4),NullableDate(r,5),NullableDate(r,6),DateTimeOffset.Parse(r.GetString(7),CultureInfo.InvariantCulture));
+    private static ApplicationRun ReadApplicationRun(SqliteDataReader r) => new(Guid.Parse(r.GetString(0)),DateTimeOffset.Parse(r.GetString(1),CultureInfo.InvariantCulture),NullableDate(r,2),r.GetString(3));
     private static void Add(SqliteCommand c, WorkspaceMetadata w) { c.Parameters.AddWithValue("$id",w.Id.ToString());c.Parameters.AddWithValue("$name",w.DisplayName);c.Parameters.AddWithValue("$path",Path.GetFullPath(w.WorkingDirectory));c.Parameters.AddWithValue("$primary",Db(w.SelectedPrimarySessionId));c.Parameters.AddWithValue("$sub",Db(w.SelectedSubAgentSessionId));c.Parameters.AddWithValue("$created",Format(w.CreatedAtUtc));c.Parameters.AddWithValue("$updated",Format(w.UpdatedAtUtc)); }
     private static void Add(SqliteCommand c, SessionMetadata s) { c.Parameters.AddWithValue("$id",s.Id.ToString());c.Parameters.AddWithValue("$workspace",s.WorkspaceId.ToString());c.Parameters.AddWithValue("$key",s.SessionKey);c.Parameters.AddWithValue("$name",s.DisplayName);c.Parameters.AddWithValue("$kind",(int)s.Kind);c.Parameters.AddWithValue("$parent",Db(s.ParentSessionId));c.Parameters.AddWithValue("$profile",(int)s.LaunchProfile);c.Parameters.AddWithValue("$order",s.DisplayOrder);c.Parameters.AddWithValue("$status",(int)s.LastStatus);c.Parameters.AddWithValue("$created",Format(s.CreatedAtUtc));c.Parameters.AddWithValue("$updated",Format(s.UpdatedAtUtc)); }
     private static void Add(SqliteCommand c, LifecycleEvent e) { c.Parameters.AddWithValue("$id",e.Id.ToString());c.Parameters.AddWithValue("$session",e.SessionId.ToString());c.Parameters.AddWithValue("$parent",Db(e.ParentSessionId));c.Parameters.AddWithValue("$previous",(int)e.PreviousStatus);c.Parameters.AddWithValue("$new",(int)e.NewStatus);c.Parameters.AddWithValue("$occurred",Format(e.OccurredAt));c.Parameters.AddWithValue("$eligible",e.AlertEligible ? 1 : 0); }
