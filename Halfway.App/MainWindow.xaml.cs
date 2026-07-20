@@ -53,7 +53,10 @@ public sealed partial class MainWindow : Window
         try
         {
             var runtimeProfile = string.Equals(Environment.GetEnvironmentVariable("HALFWAY_RUNTIME_LAUNCH"), "codex", StringComparison.OrdinalIgnoreCase) ? LaunchProfile.Codex : LaunchProfile.PowerShell;
-            await _catalog.InitializeAsync(GetWorkingDirectory(), runtimeProfile);
+            await _store.InitializeAsync();
+            var resolver = new WorkspaceRestoreResolver(_store);
+            var workingDirectory = await resolver.ResolveAsync(Environment.GetEnvironmentVariable("HALFWAY_WORKING_DIRECTORY"), Environment.CurrentDirectory);
+            await _catalog.InitializeAsync(workingDirectory, runtimeProfile);
             await _ledger.RecoverAsync();
             foreach (var session in _catalog.Sessions.OrderBy(x => x.Kind).ThenBy(x => x.DisplayOrder))
                 _registry.Register(new AgentSession(session.Id, session.DisplayName, session.Kind, _catalog.GetParentSessionId(session.Id), session.LastStatus));
@@ -385,7 +388,6 @@ public sealed partial class MainWindow : Window
         _store.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
-    private static string GetWorkingDirectory() { var configured=Environment.GetEnvironmentVariable("HALFWAY_WORKING_DIRECTORY");return !string.IsNullOrWhiteSpace(configured)&&Directory.Exists(configured)?configured:Environment.CurrentDirectory; }
     private static string ReadBranch(string path)
     {
         try { var head=Path.Combine(path,".git","HEAD");if(!File.Exists(head))return "—";var value=File.ReadAllText(head).Trim();const string prefix="ref: refs/heads/";return value.StartsWith(prefix,StringComparison.Ordinal)?value[prefix.Length..]:value.Length>=7?value[..7]:"—"; } catch { return "—"; }

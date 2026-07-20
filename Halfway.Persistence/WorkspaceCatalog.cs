@@ -38,6 +38,8 @@ public sealed class WorkspaceCatalog
         _relationships.AddRange(await _store.LoadRelationshipsAsync(Workspace.Id, cancellationToken));
         ValidateRelationships();
         await EnsureValidSelectionsAsync(cancellationToken);
+        Workspace = Workspace with { UpdatedAtUtc = DateTimeOffset.UtcNow };
+        await _store.UpdateSelectionsAsync(Workspace.Id, Workspace.SelectedPrimarySessionId, Workspace.SelectedSubAgentSessionId, cancellationToken);
         Changed?.Invoke(this, EventArgs.Empty);
     }
 

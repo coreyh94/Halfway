@@ -33,6 +33,8 @@ When a tracked sub-agent completes, Halfway sends a short status update to its p
 
 Halfway now opens a persisted workspace for its working directory. On first run it creates stable metadata for a PowerShell **Planner** primary session and a **Runtime** sub-agent. Runtime uses PowerShell unless `HALFWAY_RUNTIME_LAUNCH=codex` is set. Both selected sessions start as fresh, independent ConPTY processes.
 
+On later launches, Halfway restores the most recently opened workspace when the current directory is not already a known workspace. A valid `HALFWAY_WORKING_DIRECTORY` override takes priority, followed by a known current directory, the most recent workspace whose directory still exists, and finally the current directory. Opening a workspace marks it as most recent. Restore reuses metadata and selections but always starts newly verified processes; it never reattaches processes or restores terminal content.
+
 Use **Add sub-agent** to create a named PowerShell or Codex sub-agent. Names must be non-empty and unique within the sub-agent group. Sidebar and tab selection stay synchronized and the selected sessions, launch profiles, parent relationship, display order, and last known statuses are restored on later starts.
 
 Keyboard navigation keeps the sidebar, selected sub-agent tab, and terminal input focus synchronized: **Ctrl+1** focuses the selected Planner, **Ctrl+2** focuses the selected sub-agent, **Ctrl+Tab** and **Ctrl+Shift+Tab** cycle sub-agents, **Alt+Up** and **Alt+Down** move through primary sessions followed by sub-agents in display order, and **Ctrl+Shift+N** opens Add sub-agent. Navigation wraps, persists selection exactly like mouse selection, and works for inactive sessions without starting or restarting them. Partially typed input remains in its terminal and is never submitted by navigation.
@@ -62,7 +64,7 @@ dotnet build Halfway.App\Halfway.App.csproj --configuration Debug -p:Platform=x6
 dotnet run --project Halfway.App\Halfway.App.csproj --configuration Debug -p:Platform=x64
 ```
 
-Halfway starts the selected Planner and sub-agent through independent ConPTY sessions in the workspace working directory. Stopping one leaves its siblings running. Use the Planner **Codex** button to replace its PowerShell process with the installed Codex CLI. The working directory defaults to the directory from which Halfway is launched; set `HALFWAY_WORKING_DIRECTORY` to an existing directory to override it.
+Halfway starts the selected Planner and sub-agent through independent ConPTY sessions in the workspace working directory. Stopping one leaves its siblings running. Use the Planner **Codex** button to replace its PowerShell process with the installed Codex CLI. Set `HALFWAY_WORKING_DIRECTORY` to an existing directory to explicitly choose a workspace instead of applying normal restore resolution.
 
 The **Inject demo alert** button submits exactly one deterministic alert. If user input is partially typed, the alert remains queued until that input is submitted.
 

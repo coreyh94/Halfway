@@ -104,6 +104,13 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
         return await reader.ReadAsync(cancellationToken) ? ReadWorkspace(reader) : null;
     }, cancellationToken);
 
+    public Task<WorkspaceMetadata?> FindMostRecentWorkspaceAsync(CancellationToken cancellationToken = default) => LockedAsync(async () =>
+    {
+        await using var command = Command("SELECT Id,Name,WorkingDirectory,SelectedPrimarySessionId,SelectedSubAgentSessionId,CreatedAtUtc,UpdatedAtUtc FROM Workspaces ORDER BY UpdatedAtUtc DESC,CreatedAtUtc DESC,Id LIMIT 1;");
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadWorkspace(reader) : null;
+    }, cancellationToken);
+
     public Task InsertWorkspaceAsync(WorkspaceMetadata workspace, CancellationToken cancellationToken = default) => LockedAsync(async () =>
     {
         await using var command = Command("INSERT INTO Workspaces VALUES($id,$name,$path,$primary,$sub,$created,$updated);");
