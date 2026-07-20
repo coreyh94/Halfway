@@ -133,7 +133,7 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
 
     public Task<IReadOnlyList<SessionMetadata>> LoadSessionsAsync(Guid workspaceId, CancellationToken cancellationToken = default) => LockedAsync(async () =>
     {
-        await using var command = Command("SELECT Id,WorkspaceId,SessionKey,DisplayName,AgentKind,ParentSessionId,LaunchProfile,DisplayOrder,LastStatus,CreatedAtUtc,UpdatedAtUtc FROM Sessions WHERE WorkspaceId=$workspace ORDER BY DisplayOrder,CreatedAtUtc;");
+        await using var command = Command("SELECT Id,WorkspaceId,SessionKey,DisplayName,AgentKind,ParentSessionId,LaunchProfile,DisplayOrder,LastStatus,CreatedAtUtc,UpdatedAtUtc FROM Sessions WHERE WorkspaceId=$workspace ORDER BY AgentKind,DisplayOrder,CreatedAtUtc;");
         command.Parameters.AddWithValue("$workspace", workspaceId.ToString());
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var sessions = new List<SessionMetadata>();

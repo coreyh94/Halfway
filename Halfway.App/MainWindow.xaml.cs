@@ -6,6 +6,7 @@ using Halfway.Terminal.Readiness;
 using Halfway.Terminal.Windows;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 
 namespace Halfway.App;
@@ -29,6 +30,7 @@ public sealed partial class MainWindow : Window
     private CancellationTokenSource? _batchDelay;
     private bool _initialized;
     private bool _syncingSelection;
+    private Guid? _focusedSessionId;
 
     public MainWindow()
     {
@@ -109,6 +111,7 @@ public sealed partial class MainWindow : Window
         {
             _plannerReadiness = metadata.LaunchProfile == LaunchProfile.Codex ? new CodexReadinessAdapter() : new ShellReadinessAdapter();
             _alerts = new AlertInputCoordinator(_plannerReadiness);
+            _alerts.SetUserInput(view.PartialInput);
         }
         var readiness = metadata.Kind == AgentKind.Primary
             ? _plannerReadiness
@@ -119,6 +122,7 @@ public sealed partial class MainWindow : Window
                 RuntimeLaunchAdapterSelection.Create(metadata.LaunchProfile == LaunchProfile.Codex ? RuntimeLaunchProfile.Codex : RuntimeLaunchProfile.PowerShell),
                 new RuntimeLaunchContext(_catalog.Workspace.WorkingDirectory, new TerminalSize(100,30)), readiness);
             if (metadata.Kind == AgentKind.Primary) await QueuePendingAlertsAsync(metadata);
+            _focusedSessionId = metadata.Id;
             view.FocusInput();
         }
         catch (Exception exception)
@@ -265,16 +269,53 @@ public sealed partial class MainWindow : Window
     private async void SidebarButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: Guid id }) return;
-        var session = _catalog.Sessions.Single(x => x.Id == id);
-        if (session.Kind == AgentKind.Primary) await _catalog.SelectPrimaryAsync(id); else await _catalog.SelectSubAgentAsync(id);
-        ApplySelection(); _views[id].FocusInput();
+        await SelectSessionAsync(id);
     }
 
     private async void SubAgentTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_syncingSelection || SubAgentTabs.SelectedItem is not TabViewItem { Tag: Guid id } || !_initialized) return;
-        await _catalog.SelectSubAgentAsync(id); ApplySelection(); _views[id].FocusInput();
+        await SelectSessionAsync(id);
     }
+
+    private async Task SelectSessionAsync(Guid id)
+    {
+        var session = _catalog.Sessions.Single(x => x.Id == id);
+        if (session.Kind == AgentKind.Primary) await _catalog.SelectPrimaryAsync(id);
+        else await _catalog.SelectSubAgentAsync(id);
+        ApplySelection();
+        _focusedSessionId = id;
+        _views[id].FocusInput();
+    }
+
+    private async Task FocusTargetAsync(WorkspaceFocusTarget target)
+    {
+        var id = WorkspaceNavigation.SelectTarget(target, _catalog.Workspace.SelectedPrimarySessionId, _catalog.Workspace.SelectedSubAgentSessionId);
+        if (id is Guid selectedId) await SelectSessionAsync(selectedId);
+    }
+
+    private async Task MoveSubAgentAsync(int offset)
+    {
+        var ordered = _catalog.SubAgentSessions.OrderBy(x => x.DisplayOrder).Select(x => x.Id).ToArray();
+        var id = WorkspaceNavigation.Move(ordered, _catalog.Workspace.SelectedSubAgentSessionId, offset);
+        if (id is Guid selectedId) await SelectSessionAsync(selectedId);
+    }
+
+    private async Task MoveSidebarAsync(int offset)
+    {
+        var ordered = WorkspaceNavigation.SidebarOrder(_catalog.Sessions);
+        var currentId = _focusedSessionId ?? _catalog.Workspace.SelectedPrimarySessionId ?? _catalog.Workspace.SelectedSubAgentSessionId;
+        var id = WorkspaceNavigation.Move(ordered, currentId, offset);
+        if (id is Guid selectedId) await SelectSessionAsync(selectedId);
+    }
+
+    private async void FocusPrimary_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { args.Handled = true; await FocusTargetAsync(WorkspaceFocusTarget.Primary); }
+    private async void FocusSubAgent_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { args.Handled = true; await FocusTargetAsync(WorkspaceFocusTarget.SubAgent); }
+    private async void NextSubAgent_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { args.Handled = true; await MoveSubAgentAsync(1); }
+    private async void PreviousSubAgent_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { args.Handled = true; await MoveSubAgentAsync(-1); }
+    private async void PreviousSidebarSession_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { args.Handled = true; await MoveSidebarAsync(-1); }
+    private async void NextSidebarSession_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { args.Handled = true; await MoveSidebarAsync(1); }
+    private async void AddSubAgent_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { args.Handled = true; await ShowAddSubAgentDialogAsync(); }
 
     private void ApplySelection()
     {
@@ -289,6 +330,11 @@ public sealed partial class MainWindow : Window
     }
 
     private async void AddSubAgent_Click(object sender, RoutedEventArgs e)
+    {
+        await ShowAddSubAgentDialogAsync();
+    }
+
+    private async Task ShowAddSubAgentDialogAsync()
     {
         var name = new TextBox { Header = "Display name" }; var profile = new ComboBox { Header = "Launch profile", ItemsSource = new[] { "PowerShell", "Codex" }, SelectedIndex = 0 };
         var error = new TextBlock { Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255,241,138,138)) };

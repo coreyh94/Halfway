@@ -27,6 +27,24 @@ public sealed class WorkspaceCatalogTests
         Assert.Equal(created.Id, restored.SelectedSubAgent!.Id); Assert.Equal(AgentStatus.Completed, restored.SelectedSubAgent.LastStatus);
     }
 
+    [Fact]
+    public async Task NavigationSelectionsPersistWithoutCreatingLifecycleEventsOrAlerts()
+    {
+        await using var fixture = new CatalogFixture(); var catalog = await fixture.CreateAsync();
+        var created = await catalog.CreateSubAgentAsync("Tests", LaunchProfile.PowerShell);
+        var registry = new SessionRegistry();
+        foreach (var session in catalog.Sessions.OrderBy(x => x.Kind).ThenBy(x => x.DisplayOrder))
+            registry.Register(new AgentSession(session.Id, session.DisplayName, session.Kind, catalog.GetParentSessionId(session.Id), session.LastStatus));
+
+        await catalog.SelectPrimaryAsync(catalog.SelectedPrimary!.Id);
+        await catalog.SelectSubAgentAsync(created.Id);
+
+        var restored = new WorkspaceCatalog(fixture.Store); await restored.InitializeAsync(fixture.Directory, LaunchProfile.PowerShell);
+        Assert.Equal(created.Id, restored.SelectedSubAgent!.Id);
+        Assert.Empty(registry.Events);
+        Assert.Empty(await fixture.Store.LoadPendingAlertsAsync(catalog.SelectedPrimary.Id));
+    }
+
     private sealed class CatalogFixture : IAsyncDisposable
     {
         public string Directory { get; } = Path.Combine(Path.GetTempPath(), "Halfway.Tests", Guid.NewGuid().ToString("N"));

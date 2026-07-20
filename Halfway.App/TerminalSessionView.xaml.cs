@@ -22,7 +22,7 @@ public sealed partial class TerminalSessionView : UserControl
     public event EventHandler? CodexRequested;
     public event EventHandler? DemoAlertRequested;
     public event EventHandler<TerminalSize>? ResizeRequested;
-    public void SetStatus(AgentStatus status) { StatusText.Text=status.ToString().ToUpperInvariant(); var active=status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting; StartButton.IsEnabled=!active; StartButton.Content=status == AgentStatus.Disconnected ? "Restart" : "Start"; StopButton.IsEnabled=active; InputText.IsEnabled=status is AgentStatus.Running or AgentStatus.Waiting; }
+    public void SetStatus(AgentStatus status) { StatusText.Text=status.ToString().ToUpperInvariant(); var active=status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting; StartButton.IsEnabled=!active; StartButton.Content=status == AgentStatus.Disconnected ? "Restart" : "Start"; StopButton.IsEnabled=active; InputText.IsReadOnly=status is not (AgentStatus.Running or AgentStatus.Waiting); }
     public void Append(string output) { var plain=Regex.Replace(output,"\\x1B(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])",string.Empty);var combined=OutputText.Text+plain;OutputText.Text=combined.Length<=MaximumOutputCharacters?combined:combined[^MaximumOutputCharacters..];OutputScroll.UpdateLayout();OutputScroll.ChangeView(null,OutputScroll.ScrollableHeight,null,true); }
     public void ClearOutput()=>OutputText.Text=string.Empty;
     public void FocusInput()=>InputText.Focus(FocusState.Programmatic);
