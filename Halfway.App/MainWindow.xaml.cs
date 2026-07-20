@@ -1,227 +1,242 @@
-using System.Text.RegularExpressions;
 using Halfway.Core;
+using Halfway.Persistence;
 using Halfway.Runtime;
 using Halfway.Terminal;
 using Halfway.Terminal.Readiness;
 using Halfway.Terminal.Windows;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Input;
-using Windows.System;
+using Microsoft.UI.Xaml.Media;
 
 namespace Halfway.App;
 
 public sealed partial class MainWindow : Window
 {
-    private const int MaximumOutputCharacters = 64 * 1024;
-    private const string PlannerKey = "planner";
-    private const string RuntimeKey = "runtime";
     private readonly SessionRegistry _registry = new();
-    private readonly SessionCoordinator _sessions;
-    private readonly Guid _plannerId = Guid.NewGuid();
-    private readonly Guid _runtimeId = Guid.NewGuid();
-    private readonly string? _runtimeLaunchProfile = Environment.GetEnvironmentVariable("HALFWAY_RUNTIME_LAUNCH");
-    private IProcessReadinessAdapter _readiness = new ShellReadinessAdapter();
-    private AlertInputCoordinator _alertCoordinator;
-    private bool _submittingUserInput;
+    private readonly SessionCoordinator _coordinator;
+    private readonly IWorkspaceStore _store;
+    private readonly WorkspaceCatalog _catalog;
+    private readonly Dictionary<Guid, TerminalSessionView> _views = [];
+    private readonly Dictionary<Guid, Button> _sidebarButtons = [];
+    private readonly Dictionary<Guid, TabViewItem> _tabs = [];
+    private IProcessReadinessAdapter _plannerReadiness = new ShellReadinessAdapter();
+    private AlertInputCoordinator _alerts;
+    private bool _initialized;
+    private bool _syncingSelection;
 
     public MainWindow()
     {
         InitializeComponent();
-        _sessions = new SessionCoordinator(new ConPtyTerminalSessionFactory(), _registry);
-        _sessions.OutputReceived += Sessions_OutputReceived;
-        _sessions.StateChanged += Sessions_StateChanged;
-        _sessions.CompletionAlertReady += Sessions_CompletionAlertReady;
-        _alertCoordinator = new AlertInputCoordinator(_readiness);
-        _registry.Register(new AgentSession(_plannerId, "Planner", AgentKind.Primary, null));
-        SubAgentTabs.SelectedIndex = 0;
-        Closed += MainWindow_Closed;
+        _store = new SqliteWorkspaceStore(SqliteWorkspaceStore.ProductionDatabasePath);
+        _catalog = new WorkspaceCatalog(_store);
+        _coordinator = new SessionCoordinator(new ConPtyTerminalSessionFactory(), _registry);
+        _coordinator.OutputReceived += Coordinator_OutputReceived;
+        _coordinator.StateChanged += Coordinator_StateChanged;
+        _coordinator.CompletionAlertReady += Coordinator_CompletionAlertReady;
+        _alerts = new AlertInputCoordinator(_plannerReadiness);
         Activated += MainWindow_Activated;
+        Closed += MainWindow_Closed;
     }
-
-    private void PlannerButton_Click(object sender, RoutedEventArgs e) => SelectPrimary("Planner");
-    private void ProjectManagerButton_Click(object sender, RoutedEventArgs e) => SelectPrimary("Project Manager");
-    private void RuntimeButton_Click(object sender, RoutedEventArgs e) => SelectSubAgent(0);
-    private void UiButton_Click(object sender, RoutedEventArgs e) => SelectSubAgent(1);
-    private void TestsButton_Click(object sender, RoutedEventArgs e) => SelectSubAgent(2);
-
-    private void SelectPrimary(string name)
-    {
-        MainSessionTitle.Text = name;
-        PlannerButton.Background = name == "Planner" ? Application.Current.Resources["SystemControlHighlightListAccentLowBrush"] as Microsoft.UI.Xaml.Media.Brush : null;
-        ProjectManagerButton.Background = name == "Project Manager" ? Application.Current.Resources["SystemControlHighlightListAccentLowBrush"] as Microsoft.UI.Xaml.Media.Brush : null;
-    }
-
-    private void SelectSubAgent(int index) => SubAgentTabs.SelectedIndex = index;
 
     private async void MainWindow_Activated(object sender, WindowActivatedEventArgs args)
     {
-        Activated -= MainWindow_Activated;
-        await StartPlannerAsync(TerminalLaunchOptions.PowerShell(GetWorkingDirectory()), false);
-        await StartRuntimeAsync();
-    }
-
-    private async void PowerShellButton_Click(object sender, RoutedEventArgs e) =>
-        await StartPlannerAsync(TerminalLaunchOptions.PowerShell(GetWorkingDirectory()), false);
-
-    private async void CodexButton_Click(object sender, RoutedEventArgs e)
-    {
-        try { await StartPlannerAsync(ProcessCommandResolver.ResolveCodex(GetWorkingDirectory(), GetTerminalSize()), true); }
-        catch (Exception exception) { ShowPlannerStartupFailure(exception); }
-    }
-
-    private async Task StartPlannerAsync(TerminalLaunchOptions options, bool isCodex)
-    {
-        await _sessions.StopAsync(PlannerKey);
-        TerminalOutputText.Text = string.Empty;
-        _readiness = isCodex ? new CodexReadinessAdapter() : new ShellReadinessAdapter();
-        _alertCoordinator = new AlertInputCoordinator(_readiness);
-        TransitionPlanner(AgentStatus.Queued);
+        if (_initialized) return; _initialized = true;
         try
         {
-            await _sessions.StartAsync(
-                new ManagedSession(PlannerKey, _plannerId, "Planner", AgentKind.Primary, null),
-                options with { InitialSize = GetTerminalSize() });
-            TerminalInputText.Focus(FocusState.Programmatic);
-        }
-        catch (Exception exception) { ShowPlannerStartupFailure(exception); }
-    }
-
-    private async Task StartRuntimeAsync()
-    {
-        try
-        {
-            await _sessions.StartAsync(
-                new ManagedSession(RuntimeKey, _runtimeId, "Runtime", AgentKind.SubAgent, _plannerId),
-                RuntimeLaunchAdapterSelection.Create(_runtimeLaunchProfile),
-                new RuntimeLaunchContext(GetWorkingDirectory(), GetRuntimeSize()));
-            RuntimeInputText.Focus(FocusState.Programmatic);
+            var runtimeProfile = string.Equals(Environment.GetEnvironmentVariable("HALFWAY_RUNTIME_LAUNCH"), "codex", StringComparison.OrdinalIgnoreCase) ? LaunchProfile.Codex : LaunchProfile.PowerShell;
+            await _catalog.InitializeAsync(GetWorkingDirectory(), runtimeProfile);
+            foreach (var session in _catalog.Sessions.OrderBy(x => x.Kind).ThenBy(x => x.DisplayOrder))
+                _registry.Register(new AgentSession(session.Id, session.DisplayName, session.Kind, session.ParentSessionId, session.LastStatus));
+            BuildWorkspaceUi(); RefreshInformationBar();
+            if (_catalog.SelectedPrimary is { } primary) await StartSessionAsync(primary);
+            if (_catalog.SelectedSubAgent is { } subAgent) await StartSessionAsync(subAgent);
         }
         catch (Exception exception)
         {
-            SetRuntimeStatus(AgentStatus.Failed);
-            AppendRuntime($"[Unable to start Runtime: {exception.Message}]\n");
+            ConnectionText.Text = "! INITIALIZATION FAILED";
+            var failure = new TextBlock { Text = $"[Unable to initialize Halfway: {exception.Message}]", Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 241, 138, 138)), TextWrapping = TextWrapping.Wrap };
+            PrimaryTerminalHost.Children.Clear(); PrimaryTerminalHost.Children.Add(failure);
         }
     }
 
-    private void Sessions_OutputReceived(object? sender, SessionOutput output)
+    private void BuildWorkspaceUi()
     {
-        if (output.Key == PlannerKey) _readiness.ObserveOutput(output.Text);
-        DispatcherQueue.TryEnqueue(async () =>
+        WorkspaceText.Text = _catalog.Workspace.DisplayName;
+        RepositoryText.Text = new DirectoryInfo(_catalog.Workspace.WorkingDirectory).Name;
+        BranchText.Text = ReadBranch(_catalog.Workspace.WorkingDirectory);
+        foreach (var session in _catalog.Sessions.OrderBy(x => x.DisplayOrder)) AddSessionUi(session);
+        ApplySelection();
+    }
+
+    private void AddSessionUi(SessionMetadata session)
+    {
+        var button = new Button { Tag = session.Id, HorizontalContentAlignment = HorizontalAlignment.Stretch, Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0,0,0,0)), Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255,185,192,203)), Padding = new Thickness(10,9,10,9) };
+        button.Click += SidebarButton_Click; _sidebarButtons[session.Id] = button;
+        (session.Kind == AgentKind.Primary ? PrimaryList : SubAgentList).Children.Add(button);
+        var view = new TerminalSessionView(session); WireView(view); _views[session.Id] = view;
+        if (session.Kind == AgentKind.SubAgent)
         {
-            if (output.Key == PlannerKey)
-            {
-                AppendOutput(output.Text);
-                await TryDeliverAlertAsync();
-            }
-            else if (output.Key == RuntimeKey) AppendRuntime(output.Text);
-        });
+            var tab = new TabViewItem { Tag = session.Id, Content = view, IsClosable = false };
+            _tabs[session.Id] = tab; SubAgentTabs.TabItems.Add(tab);
+        }
+        UpdateSessionUi(session);
     }
 
-    private void Sessions_StateChanged(object? sender, SessionStateChanged state)
+    private void WireView(TerminalSessionView view)
     {
-        DispatcherQueue.TryEnqueue(() =>
+        view.StartRequested += async (_, _) => await StartSessionAsync(view.Metadata);
+        view.StopRequested += async (_, _) => await StopSessionAsync(view.Metadata);
+        view.PowerShellRequested += async (_, _) => await ReplacePrimaryAsync(view.Metadata, LaunchProfile.PowerShell);
+        view.CodexRequested += async (_, _) => await ReplacePrimaryAsync(view.Metadata, LaunchProfile.Codex);
+        view.DemoAlertRequested += async (_, _) => { _alerts.RequestDemonstrationAlert(); await TryDeliverAlertAsync(view.Metadata); };
+        view.InputSubmitted += async (_, input) => await SendInputAsync(view.Metadata, input);
+        view.ResizeRequested += (_, size) => { try { _coordinator.Resize(view.Metadata.SessionKey, size); } catch (KeyNotFoundException) { } };
+        if (view.Metadata.Kind == AgentKind.Primary) view.PartialInputChanged += (_, _) => _alerts.SetUserInput(view.PartialInput);
+    }
+
+    private async Task StartSessionAsync(SessionMetadata metadata)
+    {
+        var view = _views[metadata.Id]; view.ClearOutput();
+        if (metadata.Kind == AgentKind.Primary)
         {
-            if (state.Key == PlannerKey) TransitionPlanner(state.Status);
-            if (state.Key == RuntimeKey) SetRuntimeStatus(state.Status);
-        });
-    }
-
-    private void Sessions_CompletionAlertReady(object? sender, CompletionAlert alert)
-    {
-        if (alert.ParentSessionId != _plannerId) return;
-        _alertCoordinator.RequestAlert(alert.Message);
-        DispatcherQueue.TryEnqueue(async () => await TryDeliverAlertAsync());
-    }
-
-    private async void TerminalInputText_KeyDown(object sender, KeyRoutedEventArgs e)
-    {
-        if (e.Key != VirtualKey.Enter) return;
-        e.Handled = true;
-        var command = TerminalInputText.Text;
-        _submittingUserInput = true;
-        TerminalInputText.Text = string.Empty;
-        try { await _sessions.WriteAsync(PlannerKey, command + "\r"); await TryDeliverAlertAsync(); }
-        catch (Exception exception) { AppendOutput($"\n[Input failed: {exception.Message}]\n"); TransitionPlanner(AgentStatus.Disconnected); }
-        finally { _submittingUserInput = false; }
-    }
-
-    private async void RuntimeInputText_KeyDown(object sender, KeyRoutedEventArgs e)
-    {
-        if (e.Key != VirtualKey.Enter) return;
-        e.Handled = true;
-        var command = RuntimeInputText.Text;
-        RuntimeInputText.Text = string.Empty;
-        try { await _sessions.WriteAsync(RuntimeKey, command + "\r"); }
-        catch (Exception exception) { AppendRuntime($"\n[Input failed: {exception.Message}]\n"); SetRuntimeStatus(AgentStatus.Disconnected); }
-    }
-
-    private async void TerminalInputText_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        _alertCoordinator.SetUserInput(TerminalInputText.Text);
-        if (TerminalInputText.Text.Length == 0 && !_submittingUserInput) await TryDeliverAlertAsync();
-    }
-
-    private async void AlertButton_Click(object sender, RoutedEventArgs e)
-    {
-        _alertCoordinator.RequestDemonstrationAlert();
-        AlertButton.IsEnabled = false;
-        await TryDeliverAlertAsync();
-        if (_alertCoordinator.HasQueuedAlert) TerminalStatusText.Text = "ALERT QUEUED";
-    }
-
-    private async Task TryDeliverAlertAsync()
-    {
-        var alert = _alertCoordinator.TakeReadyAlert();
-        if (alert is null) return;
+            _plannerReadiness = metadata.LaunchProfile == LaunchProfile.Codex ? new CodexReadinessAdapter() : new ShellReadinessAdapter();
+            _alerts = new AlertInputCoordinator(_plannerReadiness);
+        }
         try
         {
-            await _sessions.WriteAsync(PlannerKey, alert + "\r");
-            _alertCoordinator.CommitAlertDelivery();
-            TerminalStatusText.Text = "ALERT DELIVERED";
+            await _coordinator.StartAsync(new ManagedSession(metadata.SessionKey, metadata.Id, metadata.DisplayName, metadata.Kind, metadata.ParentSessionId),
+                RuntimeLaunchAdapterSelection.Create(metadata.LaunchProfile == LaunchProfile.Codex ? RuntimeLaunchProfile.Codex : RuntimeLaunchProfile.PowerShell),
+                new RuntimeLaunchContext(_catalog.Workspace.WorkingDirectory, new TerminalSize(100,30)));
+            view.FocusInput();
         }
-        catch
+        catch (Exception exception)
         {
-            _alertCoordinator.ReleaseAlertDelivery();
-            TransitionPlanner(AgentStatus.Disconnected);
+            await _catalog.UpdateStatusAsync(metadata.Id, AgentStatus.Failed);
+            UpdateSessionUi(_catalog.Sessions.Single(x => x.Id == metadata.Id)); RefreshInformationBar();
+            view.Append($"[Unable to start {metadata.DisplayName}: {exception.Message}]\n");
         }
     }
 
-    private void TerminalPanel_SizeChanged(object sender, SizeChangedEventArgs e) => ResizeSession(PlannerKey, GetTerminalSize());
-    private void RuntimePanel_SizeChanged(object sender, SizeChangedEventArgs e) => ResizeSession(RuntimeKey, GetRuntimeSize());
-
-    private void ResizeSession(string key, TerminalSize size)
+    private async Task StopSessionAsync(SessionMetadata metadata)
     {
-        try { _sessions.Resize(key, size); }
-        catch (Exception exception) { if (key == RuntimeKey) AppendRuntime($"\n[Resize failed: {exception.Message}]\n"); else AppendOutput($"\n[Resize failed: {exception.Message}]\n"); }
+        try { await _coordinator.StopAsync(metadata.SessionKey); }
+        catch (Exception exception) { _views[metadata.Id].Append($"\n[Stop failed: {exception.Message}]\n"); }
+    }
+
+    private async Task SendInputAsync(SessionMetadata metadata, string input)
+    {
+        try
+        {
+            await _coordinator.WriteAsync(metadata.SessionKey, input + "\r");
+            if (metadata.Kind == AgentKind.Primary) await TryDeliverAlertAsync(metadata);
+        }
+        catch (Exception exception) { _views[metadata.Id].Append($"\n[Input failed: {exception.Message}]\n"); }
+    }
+
+    private async Task ReplacePrimaryAsync(SessionMetadata metadata, LaunchProfile profile)
+    {
+        if (_registry.Get(metadata.Id).Status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting)
+            await StopSessionAsync(metadata);
+        await StartSessionAsync(metadata with { LaunchProfile = profile });
+    }
+
+    private void Coordinator_OutputReceived(object? sender, SessionOutput output)
+    {
+        var metadata = _catalog.Sessions.FirstOrDefault(x => x.SessionKey == output.Key); if (metadata is null) return;
+        if (metadata.Kind == AgentKind.Primary) _plannerReadiness.ObserveOutput(output.Text);
+        DispatcherQueue.TryEnqueue(async () => { _views[metadata.Id].Append(output.Text); if (metadata.Kind == AgentKind.Primary) await TryDeliverAlertAsync(metadata); });
+    }
+
+    private void Coordinator_StateChanged(object? sender, SessionStateChanged state)
+    {
+        var metadata = _catalog.Sessions.FirstOrDefault(x => x.SessionKey == state.Key); if (metadata is null) return;
+        DispatcherQueue.TryEnqueue(async () =>
+        {
+            try { await _catalog.UpdateStatusAsync(metadata.Id, state.Status); UpdateSessionUi(_catalog.Sessions.Single(x => x.Id == metadata.Id)); RefreshInformationBar(); }
+            catch (Exception exception) { _views[metadata.Id].Append($"\n[Unable to persist status: {exception.Message}]\n"); }
+        });
+    }
+
+    private void Coordinator_CompletionAlertReady(object? sender, CompletionAlert alert)
+    {
+        if (_catalog.SelectedPrimary?.Id != alert.ParentSessionId) return;
+        _alerts.RequestAlert(alert.Message);
+        DispatcherQueue.TryEnqueue(async () => { if (_catalog.SelectedPrimary is { } parent) await TryDeliverAlertAsync(parent); });
+    }
+
+    private async Task TryDeliverAlertAsync(SessionMetadata parent)
+    {
+        var alert = _alerts.TakeReadyAlert(); if (alert is null) return;
+        try { await _coordinator.WriteAsync(parent.SessionKey, alert + "\r"); _alerts.CommitAlertDelivery(); }
+        catch { _alerts.ReleaseAlertDelivery(); }
+    }
+
+    private async void SidebarButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: Guid id }) return;
+        var session = _catalog.Sessions.Single(x => x.Id == id);
+        if (session.Kind == AgentKind.Primary) await _catalog.SelectPrimaryAsync(id); else await _catalog.SelectSubAgentAsync(id);
+        ApplySelection(); _views[id].FocusInput();
+    }
+
+    private async void SubAgentTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingSelection || SubAgentTabs.SelectedItem is not TabViewItem { Tag: Guid id } || !_initialized) return;
+        await _catalog.SelectSubAgentAsync(id); ApplySelection(); _views[id].FocusInput();
+    }
+
+    private void ApplySelection()
+    {
+        _syncingSelection = true;
+        try
+        {
+            if (_catalog.SelectedPrimary is { } primary) { MainSessionTitle.Text = primary.DisplayName; PrimaryTerminalHost.Children.Clear(); PrimaryTerminalHost.Children.Add(_views[primary.Id]); }
+            if (_catalog.SelectedSubAgent is { } sub && _tabs.TryGetValue(sub.Id, out var tab)) SubAgentTabs.SelectedItem = tab;
+            foreach (var pair in _sidebarButtons) pair.Value.Background = new SolidColorBrush(pair.Key == _catalog.Workspace.SelectedPrimarySessionId || pair.Key == _catalog.Workspace.SelectedSubAgentSessionId ? Windows.UI.Color.FromArgb(255,37,42,53) : Windows.UI.Color.FromArgb(0,0,0,0));
+        }
+        finally { _syncingSelection = false; }
+    }
+
+    private async void AddSubAgent_Click(object sender, RoutedEventArgs e)
+    {
+        var name = new TextBox { Header = "Display name" }; var profile = new ComboBox { Header = "Launch profile", ItemsSource = new[] { "PowerShell", "Codex" }, SelectedIndex = 0 };
+        var error = new TextBlock { Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255,241,138,138)) };
+        var panel = new StackPanel { Spacing = 8 }; panel.Children.Add(name); panel.Children.Add(profile); panel.Children.Add(error);
+        var dialog = new ContentDialog { Title = "Add sub-agent", Content = panel, PrimaryButtonText = "Add", CloseButtonText = "Cancel", XamlRoot = Content.XamlRoot };
+        while (await dialog.ShowAsync() == ContentDialogResult.Primary)
+        {
+            try
+            {
+                var created = await _catalog.CreateSubAgentAsync(name.Text, profile.SelectedIndex == 1 ? LaunchProfile.Codex : LaunchProfile.PowerShell);
+                _registry.Register(new AgentSession(created.Id, created.DisplayName, created.Kind, created.ParentSessionId)); AddSessionUi(created); ApplySelection(); await StartSessionAsync(created); return;
+            }
+            catch (Exception exception) { error.Text = exception.Message; }
+        }
+    }
+
+    private void UpdateSessionUi(SessionMetadata session)
+    {
+        _views[session.Id].SetStatus(session.LastStatus);
+        _sidebarButtons[session.Id].Content = new TextBlock { Text = $"{StatusPresentation.Glyph(session.LastStatus)}  {session.DisplayName}" };
+        if (_tabs.TryGetValue(session.Id, out var tab)) tab.Header = $"{session.DisplayName} {StatusPresentation.Glyph(session.LastStatus)}";
+    }
+
+    private void RefreshInformationBar()
+    {
+        var counts = _catalog.Sessions.GroupBy(x => x.LastStatus).ToDictionary(x => x.Key, x => x.Count());
+        RunningCountText.Text = $"RUNNING {counts.GetValueOrDefault(AgentStatus.Running)}"; WaitingCountText.Text = $"WAITING {counts.GetValueOrDefault(AgentStatus.Waiting)}"; CompletedCountText.Text = $"COMPLETE {counts.GetValueOrDefault(AgentStatus.Completed)}";
+        ConnectionText.Text = counts.GetValueOrDefault(AgentStatus.Running) > 0 ? "● CONNECTED" : "! DISCONNECTED";
     }
 
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
-        _sessions.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _coordinator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _store.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
-    private void ShowPlannerStartupFailure(Exception exception) { TransitionPlanner(AgentStatus.Failed); AppendOutput($"[Unable to start terminal: {exception.Message}]\n"); }
-    private void TransitionPlanner(AgentStatus status) { TerminalStatusText.Text = status.ToString().ToUpperInvariant(); }
-    private void SetRuntimeStatus(AgentStatus status) { RuntimeStatusText.Text = status.ToString().ToUpperInvariant(); RuntimeTab.Header = $"Runtime {StatusGlyph(status)}"; RuntimeButtonStatus.Text = StatusGlyph(status); }
-    private static string StatusGlyph(AgentStatus status) => status switch { AgentStatus.Running => "●", AgentStatus.Waiting => "◐", AgentStatus.Completed => "✓", AgentStatus.Failed or AgentStatus.Disconnected => "!", _ => "○" };
-
-    private void AppendOutput(string output) => AppendBounded(TerminalOutputText, TerminalScrollViewer, output);
-    private void AppendRuntime(string output) => AppendBounded(RuntimeOutputText, RuntimeScrollViewer, output);
-    private static void AppendBounded(TextBlock target, ScrollViewer scroll, string output)
+    private static string GetWorkingDirectory() { var configured=Environment.GetEnvironmentVariable("HALFWAY_WORKING_DIRECTORY");return !string.IsNullOrWhiteSpace(configured)&&Directory.Exists(configured)?configured:Environment.CurrentDirectory; }
+    private static string ReadBranch(string path)
     {
-        var plain = Regex.Replace(output, "\\x1B(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])", string.Empty);
-        var combined = target.Text + plain;
-        target.Text = combined.Length <= MaximumOutputCharacters ? combined : combined[^MaximumOutputCharacters..];
-        scroll.UpdateLayout(); scroll.ChangeView(null, scroll.ScrollableHeight, null, true);
-    }
-
-    private TerminalSize GetTerminalSize() => SizeFor(TerminalPanel);
-    private TerminalSize GetRuntimeSize() => SizeFor(RuntimePanel);
-    private static TerminalSize SizeFor(FrameworkElement panel) => new((short)Math.Clamp((int)(panel.ActualWidth / 8), 20, 240), (short)Math.Clamp((int)(panel.ActualHeight / 18), 5, 100));
-    private static string GetWorkingDirectory()
-    {
-        var configured = Environment.GetEnvironmentVariable("HALFWAY_WORKING_DIRECTORY");
-        return !string.IsNullOrWhiteSpace(configured) && Directory.Exists(configured) ? configured : Environment.CurrentDirectory;
+        try { var head=Path.Combine(path,".git","HEAD");if(!File.Exists(head))return "—";var value=File.ReadAllText(head).Trim();const string prefix="ref: refs/heads/";return value.StartsWith(prefix,StringComparison.Ordinal)?value[prefix.Length..]:value.Length>=7?value[..7]:"—"; } catch { return "—"; }
     }
 }

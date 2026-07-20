@@ -146,6 +146,24 @@ public sealed class SessionCoordinatorTests
         Assert.Equal("[Halfway Alert!] Runtime completed. Continue orchestration.", Assert.Single(alerts).Message);
     }
 
+    [Fact]
+    public async Task Completed_session_releases_ownership_and_can_restart()
+    {
+        var factory = new FakeFactory();
+        var registry = new SessionRegistry();
+        var plannerId = Guid.NewGuid(); registry.Register(new AgentSession(plannerId, "Planner", AgentKind.Primary, null));
+        var coordinator = new SessionCoordinator(factory, registry); var runtimeId = Guid.NewGuid();
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        coordinator.StateChanged += (_, state) => { if (state.Status == AgentStatus.Completed) completed.TrySetResult(); };
+        var descriptor = Descriptor("runtime", runtimeId, "Runtime", plannerId);
+        await coordinator.StartAsync(descriptor, Options()); factory.Sessions[0].EmitExit(0, false); await completed.Task;
+
+        Assert.Throws<KeyNotFoundException>(() => coordinator.Get("runtime"));
+        await coordinator.StartAsync(descriptor, Options());
+        Assert.Equal(AgentStatus.Running, coordinator.Get("runtime").Status);
+        await coordinator.DisposeAsync();
+    }
+
     [Theory]
     [InlineData(1, false, AgentStatus.Failed)]
     [InlineData(0, true, AgentStatus.Disconnected)]

@@ -29,7 +29,17 @@ When a tracked sub-agent completes, Halfway sends a short status update to its p
 - [ENGINEERING_PRINCIPLES.md](ENGINEERING_PRINCIPLES.md)
 - [ROADMAP.md](ROADMAP.md)
 
-## Build and run the completed Phase 0 spike
+## Phase 1 workspace shell
+
+Halfway now opens a persisted workspace for its working directory. On first run it creates stable metadata for a PowerShell **Planner** primary session and a **Runtime** sub-agent. Runtime uses PowerShell unless `HALFWAY_RUNTIME_LAUNCH=codex` is set. Both selected sessions start as fresh, independent ConPTY processes.
+
+Use **Add sub-agent** to create a named PowerShell or Codex sub-agent. Names must be non-empty and unique within the sub-agent group. Sidebar and tab selection stay synchronized and the selected sessions, launch profiles, parent relationship, display order, and last known statuses are restored on later starts.
+
+Metadata is stored in `%LOCALAPPDATA%\Halfway\halfway.db`.
+
+Halfway never treats restored metadata as proof that a process is alive. Previously active states restore as Disconnected; only the selected Planner and selected sub-agent start fresh automatically. Other restored sub-agents remain visible and can be explicitly started. Processes are not reattached, and terminal output, partial prompts, alert messages, process handles, environment variables, API keys, and secrets are not persisted.
+
+## Build and run Phase 1
 
 Prerequisites:
 
@@ -46,17 +56,18 @@ dotnet build Halfway.App\Halfway.App.csproj --configuration Debug -p:Platform=x6
 dotnet run --project Halfway.App\Halfway.App.csproj --configuration Debug -p:Platform=x64
 ```
 
-Halfway starts a Planner PowerShell session and an independent Runtime sub-agent session through ConPTY. Runtime uses PowerShell by default, or Codex when `HALFWAY_RUNTIME_LAUNCH=codex` is set. Runtime starts in the configured working directory, streams into the Runtime tab, accepts line input, and resizes with its panel. Stopping either session leaves the other session running. Use the **Codex** button to replace Planner with the installed Codex CLI. The working directory defaults to the directory from which Halfway is launched; set `HALFWAY_WORKING_DIRECTORY` to an existing directory to override it.
+Halfway starts the selected Planner and sub-agent through independent ConPTY sessions in the workspace working directory. Stopping one leaves its siblings running. Use the Planner **Codex** button to replace its PowerShell process with the installed Codex CLI. The working directory defaults to the directory from which Halfway is launched; set `HALFWAY_WORKING_DIRECTORY` to an existing directory to override it.
 
 The **Inject demo alert** button submits exactly one deterministic alert. If user input is partially typed, the alert remains queued until that input is submitted.
 
 Runtime launches PowerShell by default. Set `HALFWAY_RUNTIME_LAUNCH=codex` to launch the installed Codex CLI instead; `powershell` explicitly selects the default.
 
-## Phase 0 limitations
+## Current limitations
 
 - Terminal output is a bounded 64 KiB raw-text view with common ANSI control sequences removed; it is not a full terminal emulator.
 - Input is line-oriented. Advanced terminal keys, mouse input, search, complete scrollback, copy/paste semantics, and accurate screen-buffer rendering require an established terminal control in a later slice.
 - Codex readiness uses an isolated, deliberately conservative output heuristic and may need adapter updates as Codex output changes.
-- The Runtime tab is the first functional sub-agent tab; UI and Tests tabs remain placeholders.
-- Runtime lifecycle is tracked as queued, running, completed, failed, or disconnected. A successful Runtime exit sends exactly one queued-safe completion alert to Planner.
-- Sessions are not persisted or reattached after Halfway exits.
+- Sessions are metadata-persisted but processes are never reattached and terminal content is never restored.
+- Only one workspace (selected by working directory) is presented at a time; no delete/archive workflow is included.
+- Lifecycle state is process-based and does not include the Phase 2 event ledger, batching, or restart-safe alert delivery.
+- A successful sub-agent exit sends exactly one queued-safe completion alert to its parent during the current app run.

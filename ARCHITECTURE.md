@@ -51,6 +51,25 @@ Halfway.exe
 
 ## 4. Component Responsibilities
 
+The Phase 1 implementation separates four concrete ownership layers:
+
+```text
+SqliteWorkspaceStore -> durable workspace/session metadata
+WorkspaceCatalog     -> loaded metadata, creation, selection and persisted status
+SessionCoordinator   -> live ConPTY ownership, output, input, resize and exit
+MainWindow            -> fixed-layout presentation and user interaction
+```
+
+`Halfway.Persistence` contains the SQLite store and catalog. `Halfway.Core` contains shared workspace/session metadata, launch-profile values, agent kinds, lifecycle states, and status presentation. Persisted models never own or expose `ITerminalSession`; live terminal ownership remains exclusively in `Halfway.Runtime`.
+
+### Phase 1 persistence and restore
+
+Schema version 1 stores `Workspaces` and `Sessions`. Workspaces have stable IDs, unique working directories, display names, and selected primary/sub-agent IDs. Sessions have stable IDs and coordinator keys, workspace/parent relationships, launch profiles, display order, last status, and timestamps. Foreign keys are enabled and first-run seeding is transactional.
+
+The production database is `%LOCALAPPDATA%\Halfway\halfway.db`. It stores no terminal output, prompts, alerts, secrets, process handles, or process IDs.
+
+On first run, the catalog creates Planner and Runtime metadata and selects both. On restore, stable IDs and selection are reused. Queued, Running, and Waiting metadata is normalized to Disconnected because no previous process is considered alive. Completed, Failed, and Disconnected remain visible. The selected Planner and sub-agent start as fresh processes; other restored sessions require an explicit Start/Restart. Halfway never reattaches to an old process or resends an alert solely because metadata was restored.
+
 ### WorkspaceManager
 
 - Opens and closes workspaces.

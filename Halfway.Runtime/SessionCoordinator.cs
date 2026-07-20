@@ -178,6 +178,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
             ? AgentStatus.Disconnected
             : exit.ExitCode == 0 ? AgentStatus.Completed : AgentStatus.Failed;
         var transition = Transition(state, status);
+        _sessions.Remove(state.Descriptor.Key);
         if (transition.Alert is not null)
         {
             CompletionAlertReady?.Invoke(this, transition.Alert);

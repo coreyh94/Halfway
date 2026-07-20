@@ -15,17 +15,19 @@ Validated:
 This phase exists to prove the hardest integration risks before polishing the UI.
 Phase 0 was completed with deterministic PowerShell and `cmd.exe` coverage; Codex CLI remains an external runtime prerequisite.
 
-## Phase 1 — MVP Shell
+## Phase 1 — MVP Shell ✓
 
-- Native Windows window.
-- Information bar.
-- Agent/Sub-Agent sidebar.
-- Main terminal panel.
-- Tabbed sub-agent panel.
-- Session creation.
-- Session selection.
-- Basic status indicators.
-- SQLite workspace persistence.
+- [x] Native Windows window.
+- [x] Information bar.
+- [x] Agent/Sub-Agent sidebar.
+- [x] Main terminal panel.
+- [x] Tabbed sub-agent panel.
+- [x] Session creation.
+- [x] Session selection.
+- [x] Basic status indicators.
+- [x] SQLite workspace persistence.
+
+Phase 1 restores durable workspace/session metadata while always starting newly verified processes. It does not restore terminal transcripts or reattach processes.
 
 ## Phase 2 — Lifecycle Tracking
 
