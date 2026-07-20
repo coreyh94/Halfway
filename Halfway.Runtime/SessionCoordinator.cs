@@ -91,12 +91,27 @@ public sealed class SessionCoordinator : IAsyncDisposable
         var terminal = Interlocked.Exchange(ref state.Terminal, null);
         if (terminal is null)
         {
+            if (IsActive(state.Descriptor.Status))
+            {
+                Transition(state, AgentStatus.Disconnected);
+            }
+
             return;
         }
 
         terminal.OutputReceived -= state.OutputHandler;
         terminal.Exited -= state.ExitHandler;
-        await terminal.DisposeAsync().ConfigureAwait(false);
+        try
+        {
+            await terminal.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            if (IsActive(state.Descriptor.Status))
+            {
+                Transition(state, AgentStatus.Disconnected);
+            }
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -137,6 +152,9 @@ public sealed class SessionCoordinator : IAsyncDisposable
 
         _sessions.Remove(state.Descriptor.Key);
     }
+
+    private static bool IsActive(AgentStatus status) =>
+        status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting;
 
     private void HandleOutput(ManagedSessionState state, string output)
     {

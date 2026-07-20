@@ -21,6 +21,29 @@ public sealed class SessionCoordinatorTests
     }
 
     [Fact]
+    public async Task Explicit_stop_disconnects_only_the_selected_session_without_alerting()
+    {
+        var factory = new FakeFactory();
+        var registry = new SessionRegistry();
+        var plannerId = Guid.NewGuid();
+        registry.Register(new AgentSession(plannerId, "Planner", AgentKind.Primary, null));
+        var runtimeId = Guid.NewGuid();
+        var coordinator = new SessionCoordinator(factory, registry);
+        var states = new List<SessionStateChanged>();
+        var alerts = new List<CompletionAlert>();
+        coordinator.StateChanged += (_, state) => states.Add(state);
+        coordinator.CompletionAlertReady += (_, alert) => alerts.Add(alert);
+
+        await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options());
+        await coordinator.StopAsync("runtime");
+
+        Assert.Equal(AgentStatus.Disconnected, registry.Get(runtimeId).Status);
+        Assert.Equal(AgentStatus.Disconnected, Assert.Single(states, item => item.Status == AgentStatus.Disconnected).Status);
+        Assert.Empty(alerts);
+        Assert.True(factory.Sessions[0].IsDisposed);
+    }
+
+    [Fact]
     public async Task Runtime_output_is_published_with_only_the_runtime_key()
     {
         var factory = new FakeFactory();
@@ -173,6 +196,7 @@ public sealed class SessionCoordinatorTests
     {
         private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool IsRunning { get; private set; } = true;
+        public bool IsDisposed { get; private set; }
         public event EventHandler<string>? OutputReceived;
         public event EventHandler<TerminalExit>? Exited;
         public int ProcessId => processId;
@@ -180,7 +204,7 @@ public sealed class SessionCoordinatorTests
         public ValueTask WriteAsync(string input, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
         public void Resize(TerminalSize size) { }
         public Task StopAsync(CancellationToken cancellationToken = default) { EmitExit(0, true); return Task.CompletedTask; }
-        public ValueTask DisposeAsync() { IsRunning = false; _completion.TrySetResult(); return ValueTask.CompletedTask; }
+        public ValueTask DisposeAsync() { IsRunning = false; IsDisposed = true; _completion.TrySetResult(); return ValueTask.CompletedTask; }
         public void EmitOutput(string output) => OutputReceived?.Invoke(this, output);
         public void EmitExit(int code, bool cancelled) { IsRunning = false; _completion.TrySetResult(); Exited?.Invoke(this, new TerminalExit(code, cancelled)); }
     }
