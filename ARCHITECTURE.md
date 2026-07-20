@@ -151,6 +151,8 @@ Fallback detection may use:
 
 Output parsing must be isolated behind an adapter because Codex output formats may change.
 
+The runtime owns one `IProcessReadinessAdapter` per live session. Process start establishes `Running`; observing a safe prompt transitions it to `Waiting`; a successful terminal write resets readiness and transitions it back to `Running`. Failed writes do not falsely clear `Waiting`. The same Planner adapter supplies the alert-safety boundary, so lifecycle presentation and automatic input use one readiness fact without weakening the adapter abstraction.
+
 ### AlertDispatcher
 
 - Sends short messages to parent sessions.

@@ -1,5 +1,6 @@
 using Halfway.Core;
 using Halfway.Terminal;
+using Halfway.Terminal.Readiness;
 
 namespace Halfway.Runtime;
 
@@ -28,6 +29,15 @@ public sealed class SessionCoordinator : IAsyncDisposable
         TerminalLaunchOptions options,
         CancellationToken cancellationToken = default)
     {
+        await StartAsync(descriptor, options, null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task StartAsync(
+        ManagedSession descriptor,
+        TerminalLaunchOptions options,
+        IProcessReadinessAdapter? readiness,
+        CancellationToken cancellationToken = default)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_sessions.ContainsKey(descriptor.Key))
         {
@@ -38,7 +48,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
         {
             _registry.Register(new AgentSession(descriptor.Id, descriptor.DisplayName, descriptor.Kind, descriptor.ParentId));
         }
-        var state = new ManagedSessionState(descriptor);
+        var state = new ManagedSessionState(descriptor, readiness);
         state.Owner = this;
         _sessions.Add(descriptor.Key, state);
         Transition(state, AgentStatus.Queued);
@@ -76,12 +86,26 @@ public sealed class SessionCoordinator : IAsyncDisposable
         return StartAsync(descriptor, options, cancellationToken);
     }
 
-    public Task WriteAsync(string key, string input, CancellationToken cancellationToken = default)
+    public Task StartAsync(
+        ManagedSession descriptor,
+        IRuntimeLaunchAdapter launchAdapter,
+        RuntimeLaunchContext launchContext,
+        IProcessReadinessAdapter readiness,
+        CancellationToken cancellationToken = default)
     {
-        var terminal = GetState(key).Terminal;
-        return terminal is null
-            ? Task.FromException(new InvalidOperationException($"Session '{key}' is not running."))
-            : terminal.WriteAsync(input, cancellationToken).AsTask();
+        ArgumentNullException.ThrowIfNull(launchAdapter);
+        ArgumentNullException.ThrowIfNull(readiness);
+        var options = launchAdapter.CreateOptions(launchContext, cancellationToken);
+        return StartAsync(descriptor, options, readiness, cancellationToken);
+    }
+
+    public async Task WriteAsync(string key, string input, CancellationToken cancellationToken = default)
+    {
+        var state = GetState(key); var terminal = state.Terminal;
+        if (terminal is null) throw new InvalidOperationException($"Session '{key}' is not running.");
+        await terminal.WriteAsync(input, cancellationToken).ConfigureAwait(false);
+        state.Readiness?.ObserveInputSubmitted();
+        if (state.Descriptor.Status == AgentStatus.Waiting) Transition(state, AgentStatus.Running);
     }
 
     public void Resize(string key, TerminalSize size) => GetState(key).Terminal?.Resize(size);
@@ -162,6 +186,9 @@ public sealed class SessionCoordinator : IAsyncDisposable
 
     private void HandleOutput(ManagedSessionState state, string output)
     {
+        state.Readiness?.ObserveOutput(output);
+        if (state.Descriptor.Status == AgentStatus.Running && state.Readiness?.IsReadyForInput == true)
+            Transition(state, AgentStatus.Waiting);
         OutputReceived?.Invoke(this, new SessionOutput(state.Descriptor.Key, output));
     }
 
@@ -197,9 +224,10 @@ public sealed class SessionCoordinator : IAsyncDisposable
 
     private sealed class ManagedSessionState
     {
-        public ManagedSessionState(ManagedSession descriptor)
+        public ManagedSessionState(ManagedSession descriptor, IProcessReadinessAdapter? readiness)
         {
             Descriptor = descriptor;
+            Readiness = readiness;
             OutputHandler = (_, output) => Owner?.HandleOutput(this, output);
             ExitHandler = (_, exit) => Owner?.HandleExit(this, exit);
         }
@@ -207,6 +235,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
         public SessionCoordinator? Owner { get; set; }
         public ManagedSession Descriptor { get; set; }
         public ITerminalSession? Terminal;
+        public IProcessReadinessAdapter? Readiness { get; }
         public EventHandler<string> OutputHandler { get; }
         public EventHandler<TerminalExit> ExitHandler { get; }
     }

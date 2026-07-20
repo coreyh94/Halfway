@@ -110,11 +110,14 @@ public sealed partial class MainWindow : Window
             _plannerReadiness = metadata.LaunchProfile == LaunchProfile.Codex ? new CodexReadinessAdapter() : new ShellReadinessAdapter();
             _alerts = new AlertInputCoordinator(_plannerReadiness);
         }
+        var readiness = metadata.Kind == AgentKind.Primary
+            ? _plannerReadiness
+            : metadata.LaunchProfile == LaunchProfile.Codex ? new CodexReadinessAdapter() : new ShellReadinessAdapter();
         try
         {
             await _coordinator.StartAsync(new ManagedSession(metadata.SessionKey, metadata.Id, metadata.DisplayName, metadata.Kind, metadata.ParentSessionId),
                 RuntimeLaunchAdapterSelection.Create(metadata.LaunchProfile == LaunchProfile.Codex ? RuntimeLaunchProfile.Codex : RuntimeLaunchProfile.PowerShell),
-                new RuntimeLaunchContext(_catalog.Workspace.WorkingDirectory, new TerminalSize(100,30)));
+                new RuntimeLaunchContext(_catalog.Workspace.WorkingDirectory, new TerminalSize(100,30)), readiness);
             if (metadata.Kind == AgentKind.Primary) await QueuePendingAlertsAsync(metadata);
             view.FocusInput();
         }
@@ -152,7 +155,6 @@ public sealed partial class MainWindow : Window
     private void Coordinator_OutputReceived(object? sender, SessionOutput output)
     {
         var metadata = _catalog.Sessions.FirstOrDefault(x => x.SessionKey == output.Key); if (metadata is null) return;
-        if (metadata.Kind == AgentKind.Primary) _plannerReadiness.ObserveOutput(output.Text);
         DispatcherQueue.TryEnqueue(async () => { _views[metadata.Id].Append(output.Text); if (metadata.Kind == AgentKind.Primary) await TryDeliverAlertAsync(metadata); });
     }
 

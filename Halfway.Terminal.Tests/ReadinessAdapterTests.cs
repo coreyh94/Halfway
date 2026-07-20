@@ -30,4 +30,14 @@ public sealed class ReadinessAdapterTests
 
         Assert.True(readiness.IsReadyForInput);
     }
+
+    [Fact]
+    public void Readiness_resets_after_input_and_can_be_observed_again()
+    {
+        var shell = new ShellReadinessAdapter(); shell.ObserveOutput("PS> "); shell.ObserveInputSubmitted(); Assert.False(shell.IsReadyForInput);
+        shell.ObserveOutput("PS> "); Assert.True(shell.IsReadyForInput);
+
+        var codex = new CodexReadinessAdapter(); codex.ObserveOutput("Codex CLI\r\n> "); codex.ObserveInputSubmitted(); Assert.False(codex.IsReadyForInput);
+        codex.ObserveOutput("> "); Assert.True(codex.IsReadyForInput);
+    }
 }

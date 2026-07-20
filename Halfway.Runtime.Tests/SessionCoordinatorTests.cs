@@ -1,6 +1,7 @@
 using Halfway.Core;
 using Halfway.Runtime;
 using Halfway.Terminal;
+using Halfway.Terminal.Readiness;
 using Xunit;
 
 namespace Halfway.Runtime.Tests;
@@ -62,6 +63,36 @@ public sealed class SessionCoordinatorTests
         var item = Assert.Single(output);
         Assert.Equal("runtime", item.Key);
         Assert.Equal("runtime output", item.Text);
+    }
+
+    [Fact]
+    public async Task ReadinessAndSuccessfulInputDriveWaitingAndRunningStates()
+    {
+        var factory = new FakeFactory(); var registry = new SessionRegistry(); var plannerId = Guid.NewGuid(); var runtimeId = Guid.NewGuid();
+        registry.Register(new AgentSession(plannerId, "Planner", AgentKind.Primary, null)); var coordinator = new SessionCoordinator(factory, registry);
+        var states = new List<AgentStatus>(); coordinator.StateChanged += (_, state) => states.Add(state.Status);
+        await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options(), new ShellReadinessAdapter());
+
+        factory.Sessions[0].EmitOutput("PS> ");
+        Assert.Equal(AgentStatus.Waiting, coordinator.Get("runtime").Status);
+        await coordinator.WriteAsync("runtime", "echo work\r");
+        Assert.Equal(AgentStatus.Running, coordinator.Get("runtime").Status);
+        factory.Sessions[0].EmitOutput("PS> ");
+
+        Assert.Equal([AgentStatus.Queued, AgentStatus.Running, AgentStatus.Waiting, AgentStatus.Running, AgentStatus.Waiting], states);
+    }
+
+    [Fact]
+    public async Task FailedInputLeavesAReadySessionWaiting()
+    {
+        var factory = new FakeFactory(); var registry = new SessionRegistry(); var plannerId = Guid.NewGuid(); var runtimeId = Guid.NewGuid();
+        registry.Register(new AgentSession(plannerId, "Planner", AgentKind.Primary, null)); var coordinator = new SessionCoordinator(factory, registry);
+        await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options(), new ShellReadinessAdapter());
+        factory.Sessions[0].EmitOutput("PS> "); factory.Sessions[0].WriteException = new IOException("write failed");
+
+        await Assert.ThrowsAsync<IOException>(() => coordinator.WriteAsync("runtime", "work\r"));
+
+        Assert.Equal(AgentStatus.Waiting, coordinator.Get("runtime").Status);
     }
 
     [Fact]
@@ -221,11 +252,12 @@ public sealed class SessionCoordinatorTests
         private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool IsRunning { get; private set; } = true;
         public bool IsDisposed { get; private set; }
+        public Exception? WriteException { get; set; }
         public event EventHandler<string>? OutputReceived;
         public event EventHandler<TerminalExit>? Exited;
         public int ProcessId => processId;
         public Task Completion => _completion.Task;
-        public ValueTask WriteAsync(string input, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+        public ValueTask WriteAsync(string input, CancellationToken cancellationToken = default) => WriteException is null ? ValueTask.CompletedTask : ValueTask.FromException(WriteException);
         public void Resize(TerminalSize size) { }
         public Task StopAsync(CancellationToken cancellationToken = default) { EmitExit(0, true); return Task.CompletedTask; }
         public ValueTask DisposeAsync() { IsRunning = false; IsDisposed = true; _completion.TrySetResult(); return ValueTask.CompletedTask; }

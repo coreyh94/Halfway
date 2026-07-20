@@ -32,14 +32,14 @@ Phase 1 restores durable workspace/session metadata while always starting newly 
 ## Phase 2 — Lifecycle Tracking
 
 - Explicit parent-child registration.
-- Running, waiting, completed and failed states.
+- [x] Running, waiting, completed and failed lifecycle states.
 - [x] Durable lifecycle-event ledger.
 - [x] Restart-safe alert deduplication.
 - [x] Durable completion alert delivery.
 - [x] Deterministic batched completions.
 - [x] Pending/Reserved/Delivered restart-safe delivery state.
 
-The first Phase 2 slice persists eligible lifecycle events, atomically reserves delivery, recovers stale reservations, retries pending alerts after restart, and never requeues delivered alerts. The next slice batches same-parent completions through a fixed event-driven window and atomically applies delivery state to every batch member. Terminal transcripts and prompts remain unpersisted. Other lifecycle-tracking work is not complete.
+The first Phase 2 slice persists eligible lifecycle events, atomically reserves delivery, recovers stale reservations, retries pending alerts after restart, and never requeues delivered alerts. The next slice batches same-parent completions through a fixed event-driven window and atomically applies delivery state to every batch member. Readiness-driven tracking now distinguishes Running from Waiting while retaining process-driven completion, failure, and disconnection. Terminal transcripts and prompts remain unpersisted. Explicit parent-child registration remains the unfinished Phase 2 item.
 
 ## Phase 3 — Usability
 

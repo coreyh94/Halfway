@@ -11,4 +11,6 @@ public sealed class ShellReadinessAdapter : IProcessReadinessAdapter
             IsReadyForInput = true;
         }
     }
+
+    public void ObserveInputSubmitted() => IsReadyForInput = false;
 }

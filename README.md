@@ -39,6 +39,8 @@ Metadata is stored in `%LOCALAPPDATA%\Halfway\halfway.db`. Schema version 2 adds
 
 Halfway never treats restored metadata as proof that a process is alive. Previously active states restore as Disconnected; only the selected Planner and selected sub-agent start fresh automatically. Other restored sub-agents remain visible and can be explicitly started. Processes are not reattached, and terminal output, partial prompts, process handles, environment variables, API keys, and secrets are not persisted. Only deterministic eligible alert messages are stored with delivery facts; terminal transcripts and prompts remain unpersisted.
 
+Live sessions transition from Running to Waiting when their isolated PowerShell or Codex readiness adapter observes a safe prompt. Successfully submitted user or Halfway input returns Waiting to Running until readiness is observed again. Failed writes leave the session Waiting. Completion, failure, disconnection, and explicit-stop mapping remain process-driven.
+
 ## Build and run Phase 1
 
 Prerequisites:
