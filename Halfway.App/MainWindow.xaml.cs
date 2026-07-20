@@ -69,7 +69,7 @@ public sealed partial class MainWindow : Window
         catch (Exception exception)
         {
             ConnectionText.Text = "! INITIALIZATION FAILED";
-            var failure = new TextBlock { Text = $"[Unable to initialize Halfway: {exception.Message}]", Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 241, 138, 138)), TextWrapping = TextWrapping.Wrap };
+            var failure = new TextBlock { Text = $"[Unable to initialize Halfway: {exception.Message}]", Foreground = ThemeBrush("ErrorBrush"), TextWrapping = TextWrapping.Wrap };
             PrimaryTerminalHost.Children.Clear(); PrimaryTerminalHost.Children.Add(failure);
         }
     }
@@ -85,7 +85,7 @@ public sealed partial class MainWindow : Window
 
     private void AddSessionUi(SessionMetadata session)
     {
-        var button = new Button { Tag = session.Id, HorizontalContentAlignment = HorizontalAlignment.Stretch, Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0,0,0,0)), Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255,185,192,203)), Padding = new Thickness(10,9,10,9) };
+        var button = new Button { Tag = session.Id, HorizontalContentAlignment = HorizontalAlignment.Stretch, Background = ThemeBrush("TransparentBrush"), Foreground = ThemeBrush("SidebarTextBrush"), Padding = new Thickness(10,9,10,9) };
         button.Click += SidebarButton_Click; _sidebarButtons[session.Id] = button;
         (session.Kind == AgentKind.Primary ? PrimaryList : SubAgentList).Children.Add(button);
         var view = new TerminalSessionView(session); WireView(view); _views[session.Id] = view;
@@ -350,7 +350,7 @@ public sealed partial class MainWindow : Window
         {
             if (_catalog.SelectedPrimary is { } primary) { MainSessionTitle.Text = primary.DisplayName; PrimaryTerminalHost.Children.Clear(); PrimaryTerminalHost.Children.Add(_views[primary.Id]); }
             if (_catalog.SelectedSubAgent is { } sub && _tabs.TryGetValue(sub.Id, out var tab)) SubAgentTabs.SelectedItem = tab;
-            foreach (var pair in _sidebarButtons) pair.Value.Background = new SolidColorBrush(pair.Key == _catalog.Workspace.SelectedPrimarySessionId || pair.Key == _catalog.Workspace.SelectedSubAgentSessionId ? Windows.UI.Color.FromArgb(255,37,42,53) : Windows.UI.Color.FromArgb(0,0,0,0));
+            foreach (var pair in _sidebarButtons) pair.Value.Background = ThemeBrush(pair.Key == _catalog.Workspace.SelectedPrimarySessionId || pair.Key == _catalog.Workspace.SelectedSubAgentSessionId ? "SelectedBackgroundBrush" : "TransparentBrush");
         }
         finally { _syncingSelection = false; }
     }
@@ -363,7 +363,7 @@ public sealed partial class MainWindow : Window
     private async Task ShowAddSubAgentDialogAsync()
     {
         var name = new TextBox { Header = "Display name" }; var profile = new ComboBox { Header = "Launch profile", ItemsSource = new[] { "PowerShell", "Codex" }, SelectedIndex = 0 };
-        var error = new TextBlock { Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255,241,138,138)) };
+        var error = new TextBlock { Foreground = ThemeBrush("ErrorBrush") };
         var panel = new StackPanel { Spacing = 8 }; panel.Children.Add(name); panel.Children.Add(profile); panel.Children.Add(error);
         var dialog = new ContentDialog { Title = "Add sub-agent", Content = panel, PrimaryButtonText = "Add", CloseButtonText = "Cancel", XamlRoot = Content.XamlRoot };
         while (await dialog.ShowAsync() == ContentDialogResult.Primary)
@@ -406,6 +406,8 @@ public sealed partial class MainWindow : Window
 
     private void SidebarSplitter_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) => SidebarColumn.Width = new GridLength(236);
     private void SubAgentSplitter_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) => SubAgentColumn.Width = new GridLength(420);
+
+    private static SolidColorBrush ThemeBrush(string key) => (SolidColorBrush)Application.Current.Resources[key];
 
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {

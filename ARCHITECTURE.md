@@ -69,6 +69,8 @@ Terminal search remains a presentation-only feature. A pure `TerminalSearch` hel
 
 The fixed workspace grid exposes two native drag boundaries for sidebar/main and main/sub-agent sizing. Pure `PanelSizing` calculations clamp each pair to usable minimums while preserving available width; the main panel remains responsive as the window changes size. `TerminalSessionView.SizeChanged` continues through `SessionCoordinator.Resize` to the owned ConPTY session. Divider movement does not select sessions, submit input, change lifecycle state, or persist layout dimensions.
 
+Application-level light and dark theme dictionaries define semantic colors for workspace surfaces, text hierarchy, status, selection, errors, splitters, and search highlights. XAML and dynamically created presentation elements consume shared theme brushes, allowing WinUI to follow the Windows application theme at runtime. Theme choice is presentation-only: it is not stored in SQLite and does not affect terminal ownership, input readiness, lifecycle events, or alert delivery.
+
 `Halfway.Persistence` contains the SQLite store and catalog. `Halfway.Core` contains shared workspace/session metadata, launch-profile values, agent kinds, lifecycle states, and status presentation. Persisted models never own or expose `ITerminalSession`; live terminal ownership remains exclusively in `Halfway.Runtime`.
 
 ### Persistence and restore

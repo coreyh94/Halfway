@@ -48,7 +48,7 @@ Phase 2 persists eligible lifecycle events, atomically reserves delivery, recove
 - [x] Workspace restore.
 - [x] Unread indicators.
 - [x] Resizable panels.
-- Light and dark theme.
+- [x] Light and dark theme.
 - Windows notifications for failures where useful.
 
 ## Phase 4 — Reliability
