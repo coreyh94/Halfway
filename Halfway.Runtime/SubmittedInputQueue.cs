@@ -28,7 +28,7 @@ public sealed class SubmittedInputQueue
         get { lock (_gate) return _count; }
     }
 
-    public Task EnqueueAsync(string input, CancellationToken cancellationToken = default)
+    public SubmittedInputAcceptance Accept(string input, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
         var entry = new Entry(input, cancellationToken);
@@ -40,12 +40,12 @@ public sealed class SubmittedInputQueue
             if (_closeReason is not null)
             {
                 entry.CancellationRegistration.Dispose();
-                return Task.FromException(_closeReason);
+                throw _closeReason;
             }
             if (_count >= _capacity)
             {
                 entry.CancellationRegistration.Dispose();
-                return Task.FromException(new SubmittedInputQueueFullException(_capacity));
+                throw new SubmittedInputQueueFullException(_capacity);
             }
             _entries.Enqueue(entry);
             _count++;
@@ -56,8 +56,11 @@ public sealed class SubmittedInputQueue
             }
         }
         if (startWorker) _ = ProcessAsync();
-        return entry.Completion.Task;
+        return new SubmittedInputAcceptance(entry.Completion.Task);
     }
+
+    public Task EnqueueAsync(string input, CancellationToken cancellationToken = default) =>
+        Accept(input, cancellationToken).Completion;
 
     public void Close(Exception reason)
     {
@@ -132,6 +135,8 @@ public sealed class SubmittedInputQueue
         public CancellationTokenRegistration CancellationRegistration { get; set; }
     }
 }
+
+public sealed record SubmittedInputAcceptance(Task Completion);
 
 public sealed class SubmittedInputQueueFullException(int capacity)
     : InvalidOperationException($"The submitted input queue is full (capacity {capacity}); the newest submission was rejected.");

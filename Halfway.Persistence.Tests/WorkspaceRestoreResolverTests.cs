@@ -7,13 +7,51 @@ public sealed class WorkspaceRestoreResolverTests : IAsyncDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "Halfway.Tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
-    public async Task ValidExplicitDirectoryTakesPriorityAndInvalidExplicitDirectoryFallsBackToCurrent()
+    public async Task ValidExplicitDirectoryRetainsHighestPriority()
     {
         var current = CreateDirectory("current"); var configured = CreateDirectory("configured");
-        await using var store = await CreateStoreAsync(); var resolver = new WorkspaceRestoreResolver(store);
+        await using var store = await CreateStoreAsync();
+        await InsertWorkspaceAsync(store, current, DateTimeOffset.UnixEpoch.AddDays(1));
 
-        Assert.Equal(Path.GetFullPath(configured), await resolver.ResolveAsync(configured, current));
-        Assert.Equal(Path.GetFullPath(current), await resolver.ResolveAsync(Path.Combine(_root, "missing"), current));
+        Assert.Equal(Path.GetFullPath(configured), await new WorkspaceRestoreResolver(store).ResolveAsync(configured, current));
+    }
+
+    [Fact]
+    public async Task InvalidExplicitDirectoryContinuesToKnownCurrentWorkspaceWithWindowsPathIdentity()
+    {
+        var current = CreateDirectory("KnownCurrent");
+        await using var store = await CreateStoreAsync();
+        await InsertWorkspaceAsync(store, current.ToUpperInvariant(), DateTimeOffset.UnixEpoch);
+
+        var result = await new WorkspaceRestoreResolver(store).ResolveAsync(Path.Combine(_root, "missing"), current.ToLowerInvariant());
+
+        Assert.Equal(Path.GetFullPath(current.ToLowerInvariant()), result, ignoreCase: true);
+    }
+
+    [Fact]
+    public async Task InvalidExplicitAndUnknownCurrentContinueToValidRecentWorkspace()
+    {
+        var current = CreateDirectory("current"); var recent = CreateDirectory("Recent");
+        await using var store = await CreateStoreAsync();
+        await InsertWorkspaceAsync(store, recent.ToUpperInvariant(), DateTimeOffset.UnixEpoch.AddDays(1));
+
+        var result = await new WorkspaceRestoreResolver(store).ResolveAsync(Path.Combine(_root, "missing-explicit"), current);
+
+        Assert.Equal(Path.GetFullPath(recent), result, ignoreCase: true);
+    }
+
+    [Fact]
+    public async Task InvalidExplicitAndRecentUseCurrentDirectoryAsFinalFallbackWithoutCreatingWorkspace()
+    {
+        var current = CreateDirectory("current"); var recent = CreateDirectory("recent");
+        await using var store = await CreateStoreAsync();
+        await InsertWorkspaceAsync(store, recent, DateTimeOffset.UnixEpoch.AddDays(1));
+        Directory.Delete(recent);
+
+        var result = await new WorkspaceRestoreResolver(store).ResolveAsync(Path.Combine(_root, "missing-explicit"), current);
+
+        Assert.Equal(Path.GetFullPath(current), result);
+        Assert.Null(await store.FindWorkspaceAsync(current));
     }
 
     [Fact]

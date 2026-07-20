@@ -19,7 +19,7 @@ public sealed partial class TerminalSessionView : UserControl
     public SessionMetadata Metadata { get; private set; }
     public string PartialInput => InputText.Text;
     public bool IsSearchOpen => SearchPanel.Visibility == Visibility.Visible;
-    public event EventHandler<string>? InputSubmitted;
+    public Func<string, Task<TerminalInputAcceptance>>? SubmitInputAsync { get; set; }
     public event EventHandler? PartialInputChanged;
     public event EventHandler? StartRequested;
     public event EventHandler? StopRequested;
@@ -56,7 +56,21 @@ public sealed partial class TerminalSessionView : UserControl
     private void CodexButton_Click(object sender,RoutedEventArgs e)=>CodexRequested?.Invoke(this,EventArgs.Empty);
     private void DemoAlertButton_Click(object sender,RoutedEventArgs e)=>DemoAlertRequested?.Invoke(this,EventArgs.Empty);
     private void InputText_TextChanged(object sender,TextChangedEventArgs e)=>PartialInputChanged?.Invoke(this,EventArgs.Empty);
-    private void InputText_KeyDown(object sender,KeyRoutedEventArgs e){if(e.Key!=VirtualKey.Enter)return;e.Handled=true;var text=InputText.Text;InputText.Text=string.Empty;InputSubmitted?.Invoke(this,text);}
+    private async void InputText_KeyDown(object sender,KeyRoutedEventArgs e)
+    {
+        if(e.Key!=VirtualKey.Enter)return;
+        e.Handled=true;
+        var submitted=InputText.Text;
+        var acceptance=SubmitInputAsync is null
+            ? TerminalInputAcceptance.RejectedSubmission
+            : await SubmitInputAsync(submitted);
+        var visible=TerminalInputPresentation.ResolveVisibleText(submitted,InputText.Text,acceptance);
+        if(!string.Equals(visible,InputText.Text,StringComparison.Ordinal))
+        {
+            InputText.Text=visible;
+            InputText.SelectionStart=visible.Length;
+        }
+    }
     private void SearchText_TextChanged(object sender,TextChangedEventArgs e)=>RefreshSearch();
     private void SearchText_KeyDown(object sender,KeyRoutedEventArgs e){if(e.Key==VirtualKey.Enter){e.Handled=true;MoveToNextMatch();}else if(e.Key==VirtualKey.Escape){e.Handled=true;CloseSearch();}}
     private void PreviousSearchButton_Click(object sender,RoutedEventArgs e)=>MoveToPreviousMatch();

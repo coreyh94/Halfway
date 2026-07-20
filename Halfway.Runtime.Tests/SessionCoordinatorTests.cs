@@ -135,6 +135,67 @@ public sealed class SessionCoordinatorTests
     }
 
     [Fact]
+    public async Task ExactOwnershipAcknowledgesQueueAcceptanceBeforeWriteCompletion()
+    {
+        var factory = new FakeFactory(); var coordinator = CreateCoordinator(factory, out var plannerId, out var runtimeId);
+        await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options());
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        factory.Sessions[0].WriteGate = release;
+
+        var acceptance = coordinator.SubmitUserInput("runtime", "accepted\r");
+
+        Assert.False(acceptance.Completion.IsCompleted);
+        Assert.Equal(["accepted\r"], factory.Sessions[0].Inputs);
+        release.TrySetResult();
+        await acceptance.Completion;
+    }
+
+    [Fact]
+    public async Task ReleasedOwnershipRejectsBeforeAcceptanceAndCannotReachReplacement()
+    {
+        var factory = new FakeFactory(); var registry = new SessionRegistry(); var plannerId = Guid.NewGuid(); var runtimeId = Guid.NewGuid();
+        registry.Register(new AgentSession(plannerId, "Planner", AgentKind.Primary, null));
+        var coordinator = new SessionCoordinator(factory, registry); var descriptor = Descriptor("runtime", runtimeId, "Runtime", plannerId);
+        await coordinator.StartAsync(descriptor, Options());
+        await coordinator.StopAsync("runtime");
+
+        Assert.Throws<KeyNotFoundException>(() => coordinator.SubmitUserInput("runtime", "rejected\r"));
+        await coordinator.StartAsync(descriptor, Options());
+
+        Assert.Empty(factory.Sessions[0].Inputs);
+        Assert.Empty(factory.Sessions[1].Inputs);
+    }
+
+    [Fact]
+    public async Task WriteFailureAfterAcceptanceIsNotReplayedAsAnotherSubmission()
+    {
+        var factory = new FakeFactory(); var coordinator = CreateCoordinator(factory, out var plannerId, out var runtimeId);
+        await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options(), new ShellReadinessAdapter());
+        factory.Sessions[0].EmitOutput("PS> ");
+        factory.Sessions[0].WriteException = new IOException("write failed");
+
+        var accepted = coordinator.SubmitUserInput("runtime", "failed\r");
+        await Assert.ThrowsAsync<IOException>(() => accepted.Completion);
+        factory.Sessions[0].WriteException = null;
+        await coordinator.SubmitUserInputAsync("runtime", "later\r");
+
+        Assert.Equal(["later\r"], factory.Sessions[0].Inputs);
+        Assert.Equal(AgentStatus.Running, coordinator.Get("runtime").Status);
+    }
+
+    [Fact]
+    public async Task FinalTerminalSizeRoutesToExactOwnedTerminal()
+    {
+        var factory = new FakeFactory(); var coordinator = CreateCoordinator(factory, out var plannerId, out var runtimeId);
+        await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options());
+        var finalSize = new TerminalSize(97, 31);
+
+        coordinator.Resize("runtime", finalSize);
+
+        Assert.Equal([finalSize], factory.Sessions[0].Sizes);
+    }
+
+    [Fact]
     public async Task ExitResolvesQueuedInputAndNeverDeliversItToReplacementOwnership()
     {
         var factory = new FakeFactory(); var registry = new SessionRegistry(); var plannerId = Guid.NewGuid(); var runtimeId = Guid.NewGuid();
@@ -434,6 +495,7 @@ public sealed class SessionCoordinatorTests
         public Exception? WriteException { get; set; }
         public TaskCompletionSource? WriteGate { get; set; }
         public List<string> Inputs { get; } = [];
+        public List<TerminalSize> Sizes { get; } = [];
         public event EventHandler<string>? OutputReceived;
         public event EventHandler<TerminalExit>? Exited;
         public int ProcessId => processId;
@@ -444,7 +506,7 @@ public sealed class SessionCoordinatorTests
             Inputs.Add(input);
             if (WriteGate is not null) await WriteGate.Task.WaitAsync(cancellationToken);
         }
-        public void Resize(TerminalSize size) { }
+        public void Resize(TerminalSize size) => Sizes.Add(size);
         public Task StopAsync(CancellationToken cancellationToken = default) { EmitExit(0, true); return Task.CompletedTask; }
         public ValueTask DisposeAsync() { IsRunning = false; IsDisposed = true; _completion.TrySetResult(); return ValueTask.CompletedTask; }
         public void EmitOutput(string output) => OutputReceived?.Invoke(this, output);

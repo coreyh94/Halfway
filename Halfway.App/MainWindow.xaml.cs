@@ -39,6 +39,9 @@ public sealed partial class MainWindow : Window
     private Guid? _focusedSessionId;
     private bool _isWindowActive;
     private ApplicationRunStart? _applicationRun;
+    private double _preferredSidebarWidth = PanelSizing.DefaultSidebarWidth;
+    private double _preferredSubAgentWidth = PanelSizing.DefaultDetailWidth;
+    private bool _applyingPanelLayout;
 
     public MainWindow()
     {
@@ -121,7 +124,7 @@ public sealed partial class MainWindow : Window
         view.PowerShellRequested += async (_, _) => await ReplacePrimaryAsync(view.Metadata, LaunchProfile.PowerShell);
         view.CodexRequested += async (_, _) => await ReplacePrimaryAsync(view.Metadata, LaunchProfile.Codex);
         view.DemoAlertRequested += async (_, _) => { _alerts.RequestAlert(Guid.Empty, view.Metadata.Id, AlertInputCoordinator.DemonstrationAlert); await TryDeliverAlertAsync(view.Metadata); };
-        view.InputSubmitted += async (_, input) => await SendInputAsync(view.Metadata, input);
+        view.SubmitInputAsync = input => AcceptInputAsync(view, view.Metadata, input);
         view.ResizeRequested += (_, size) => { try { _coordinator.Resize(view.Metadata.SessionKey, size); } catch (KeyNotFoundException) { } };
         if (view.Metadata.Kind == AgentKind.Primary) view.PartialInputChanged += (_, _) => _alerts.SetUserInput(view.PartialInput);
     }
@@ -166,14 +169,32 @@ public sealed partial class MainWindow : Window
         catch (Exception exception) { RecordFailure("session", "stop-failed", exception, metadata.Id); _views[metadata.Id].Append($"\n[Stop failed: {exception.Message}]\n"); }
     }
 
-    private async Task SendInputAsync(SessionMetadata metadata, string input)
+    private Task<TerminalInputAcceptance> AcceptInputAsync(TerminalSessionView view, SessionMetadata metadata, string input)
     {
         try
         {
-            await _coordinator.SubmitUserInputAsync(metadata.SessionKey, input + "\r");
+            var acceptance = _coordinator.SubmitUserInput(metadata.SessionKey, input + "\r");
+            _ = ObserveAcceptedInputAsync(view, metadata, acceptance.Completion);
+            return Task.FromResult(TerminalInputAcceptance.AcceptedSubmission);
+        }
+        catch (Exception exception)
+        {
+            view.Append($"\n[Input rejected: {exception.Message}]\n");
+            return Task.FromResult(TerminalInputAcceptance.RejectedSubmission);
+        }
+    }
+
+    private async Task ObserveAcceptedInputAsync(TerminalSessionView view, SessionMetadata metadata, Task completion)
+    {
+        try
+        {
+            await completion;
             if (metadata.Kind == AgentKind.Primary) await TryDeliverAlertAsync(metadata);
         }
-        catch (Exception exception) { _views[metadata.Id].Append($"\n[Input failed: {exception.Message}]\n"); }
+        catch (Exception exception)
+        {
+            view.Append($"\n[Input failed after acceptance: {exception.Message}]\n");
+        }
     }
 
     private async Task ReplacePrimaryAsync(SessionMetadata metadata, LaunchProfile profile)
@@ -425,23 +446,41 @@ public sealed partial class MainWindow : Window
     {
         var counts = _catalog.Sessions.GroupBy(x => x.LastStatus).ToDictionary(x => x.Key, x => x.Count());
         RunningCountText.Text = $"RUNNING {counts.GetValueOrDefault(AgentStatus.Running)}"; WaitingCountText.Text = $"WAITING {counts.GetValueOrDefault(AgentStatus.Waiting)}"; CompletedCountText.Text = $"COMPLETE {counts.GetValueOrDefault(AgentStatus.Completed)}";
-        ConnectionText.Text = counts.GetValueOrDefault(AgentStatus.Running) > 0 ? "● CONNECTED" : "! DISCONNECTED";
+        ConnectionText.Text = ConnectionPresentation.IsConnected(_catalog.Sessions.Select(session => session.LastStatus)) ? "● CONNECTED" : "! DISCONNECTED";
     }
 
     private void SidebarSplitter_DragDelta(object sender, DragDeltaEventArgs e)
     {
-        var resized = PanelSizing.Resize(SidebarColumn.ActualWidth, PrimaryColumn.ActualWidth, e.HorizontalChange, 160, 420, 320);
-        SidebarColumn.Width = new GridLength(resized.Leading);
+        var resized = PanelSizing.Resize(SidebarColumn.ActualWidth, PrimaryColumn.ActualWidth, e.HorizontalChange, PanelSizing.MinimumSidebarWidth, PanelSizing.MaximumSidebarWidth, PanelSizing.MinimumPrimaryWidth);
+        _preferredSidebarWidth = resized.Leading;
+        ApplyPanelLayout();
     }
 
     private void SubAgentSplitter_DragDelta(object sender, DragDeltaEventArgs e)
     {
-        var resized = PanelSizing.Resize(PrimaryColumn.ActualWidth, SubAgentColumn.ActualWidth, e.HorizontalChange, 320, double.MaxValue, 280);
-        SubAgentColumn.Width = new GridLength(resized.Trailing);
+        var resized = PanelSizing.Resize(PrimaryColumn.ActualWidth, SubAgentColumn.ActualWidth, e.HorizontalChange, PanelSizing.MinimumPrimaryWidth, double.MaxValue, PanelSizing.MinimumDetailWidth);
+        _preferredSubAgentWidth = resized.Trailing;
+        ApplyPanelLayout();
     }
 
-    private void SidebarSplitter_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) => SidebarColumn.Width = new GridLength(236);
-    private void SubAgentSplitter_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) => SubAgentColumn.Width = new GridLength(420);
+    private void SidebarSplitter_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) { _preferredSidebarWidth = PanelSizing.DefaultSidebarWidth; ApplyPanelLayout(); }
+    private void SubAgentSplitter_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) { _preferredSubAgentWidth = PanelSizing.DefaultDetailWidth; ApplyPanelLayout(); }
+
+    private void WorkspaceGrid_SizeChanged(object sender, SizeChangedEventArgs e) => ApplyPanelLayout();
+
+    private void ApplyPanelLayout()
+    {
+        if (_applyingPanelLayout) return;
+        _applyingPanelLayout = true;
+        try
+        {
+            var widths = PanelSizing.CalculateWorkspace(Math.Max(0, WorkspaceGrid.ActualWidth - 10), _preferredSidebarWidth, _preferredSubAgentWidth);
+            SidebarColumn.Width = new GridLength(widths.Sidebar);
+            PrimaryColumn.Width = new GridLength(widths.Primary);
+            SubAgentColumn.Width = new GridLength(widths.Detail);
+        }
+        finally { _applyingPanelLayout = false; }
+    }
 
     private static SolidColorBrush ThemeBrush(string key) => (SolidColorBrush)Application.Current.Resources[key];
 

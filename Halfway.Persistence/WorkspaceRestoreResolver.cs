@@ -15,10 +15,26 @@ public sealed class WorkspaceRestoreResolver
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(currentDirectory);
         var current = Path.GetFullPath(currentDirectory);
-        if (!string.IsNullOrWhiteSpace(configuredDirectory))
-            return _directoryExists(configuredDirectory) ? Path.GetFullPath(configuredDirectory) : current;
+        if (TryResolveExistingDirectory(configuredDirectory, out var configured)) return configured;
         if (await _store.FindWorkspaceAsync(current, cancellationToken) is not null) return current;
         var recent = await _store.FindMostRecentWorkspaceAsync(cancellationToken);
-        return recent is not null && _directoryExists(recent.WorkingDirectory) ? Path.GetFullPath(recent.WorkingDirectory) : current;
+        return TryResolveExistingDirectory(recent?.WorkingDirectory, out var restored) ? restored : current;
+    }
+
+    private bool TryResolveExistingDirectory(string? candidate, out string resolved)
+    {
+        resolved = string.Empty;
+        if (string.IsNullOrWhiteSpace(candidate)) return false;
+        try
+        {
+            var fullPath = Path.GetFullPath(candidate);
+            if (!_directoryExists(fullPath)) return false;
+            resolved = fullPath;
+            return true;
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
     }
 }

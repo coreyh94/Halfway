@@ -6,6 +6,26 @@ namespace Halfway.Runtime.Tests;
 public sealed class SubmittedInputQueueTests
 {
     [Fact]
+    public async Task AcceptanceIsAcknowledgedBeforeTerminalWriteCompletion()
+    {
+        var writeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queue = new SubmittedInputQueue(async (_, token) =>
+        {
+            writeStarted.TrySetResult();
+            await releaseWrite.Task.WaitAsync(token);
+        });
+
+        var acceptance = queue.Accept("accepted");
+        await writeStarted.Task;
+
+        Assert.False(acceptance.Completion.IsCompleted);
+        Assert.Equal(1, queue.Count);
+        releaseWrite.TrySetResult();
+        await acceptance.Completion;
+    }
+
+    [Fact]
     public async Task AcceptedEntriesAreDeliveredInFifoOrder()
     {
         var delivered = new List<string>();

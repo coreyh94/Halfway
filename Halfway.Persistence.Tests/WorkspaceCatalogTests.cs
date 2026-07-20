@@ -48,6 +48,24 @@ public sealed class WorkspaceCatalogTests
         Assert.Equal(AgentStatus.Disconnected, restored.SelectedPrimary.LastStatus);
     }
 
+    [Theory]
+    [InlineData(AgentStatus.Queued)]
+    [InlineData(AgentStatus.Running)]
+    [InlineData(AgentStatus.Waiting)]
+    public async Task RestoredActiveMetadataRemainsDisconnectedUntilFreshOwnership(AgentStatus persistedStatus)
+    {
+        await using var fixture = new CatalogFixture();
+        var catalog = await fixture.CreateAsync();
+        var plannerId = catalog.SelectedPrimary!.Id;
+        await catalog.UpdateStatusAsync(plannerId, persistedStatus);
+
+        var restored = new WorkspaceCatalog(fixture.Store);
+        await restored.InitializeAsync(fixture.Directory, LaunchProfile.PowerShell);
+
+        Assert.Equal(AgentStatus.Disconnected, restored.SelectedPrimary!.LastStatus);
+        Assert.False(ConnectionPresentation.IsConnected(restored.Sessions.Select(session => session.LastStatus)));
+    }
+
     [Fact]
     public async Task NavigationSelectionsPersistWithoutCreatingLifecycleEventsOrAlerts()
     {

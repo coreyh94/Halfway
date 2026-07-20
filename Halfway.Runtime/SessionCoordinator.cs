@@ -165,15 +165,18 @@ public sealed class SessionCoordinator : IAsyncDisposable
         return WriteOwnedAsync(ownership, input, requireReady: true, isStillSafe, suppressWriteExceptions: true, cancellationToken);
     }
 
-    public Task SubmitUserInputAsync(string key, string input, CancellationToken cancellationToken = default)
+    public SubmittedInputAcceptance SubmitUserInput(string key, string input, CancellationToken cancellationToken = default)
     {
         lock (_ownershipGate)
         {
             var state = GetStateLocked(key);
-            if (!IsWritableLocked(state)) return Task.FromException(new SessionInputUnavailableException(key));
-            return state.UserInput.EnqueueAsync(input, cancellationToken);
+            if (!IsWritableLocked(state)) throw new SessionInputUnavailableException(key);
+            return state.UserInput.Accept(input, cancellationToken);
         }
     }
+
+    public Task SubmitUserInputAsync(string key, string input, CancellationToken cancellationToken = default) =>
+        SubmitUserInput(key, input, cancellationToken).Completion;
 
     public void Resize(string key, TerminalSize size)
     {
