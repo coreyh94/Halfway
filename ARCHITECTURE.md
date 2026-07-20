@@ -65,6 +65,8 @@ MainWindow            -> fixed-layout presentation and user interaction
 
 Terminal search remains a presentation-only feature. A pure `TerminalSearch` helper finds case-insensitive matches and wraps result navigation; `TerminalSessionView` owns the per-view query, highlighting, and scroll position within its bounded in-memory output. Search never reads the input control, writes to ConPTY, changes readiness, creates lifecycle events, queues alerts, or persists queries, matches, or output.
 
+`SessionAttentionTracker` owns transient unread state. A real `SessionCoordinator.OutputReceived` callback marks a session unread only when another terminal is focused, and focusing that terminal clears its marker in both sidebar and tab presentation. Repeated output is idempotent, focused output stays read, and restore creates no unread state. Attention state never enters SQLite and does not participate in lifecycle detection or alert delivery.
+
 `Halfway.Persistence` contains the SQLite store and catalog. `Halfway.Core` contains shared workspace/session metadata, launch-profile values, agent kinds, lifecycle states, and status presentation. Persisted models never own or expose `ITerminalSession`; live terminal ownership remains exclusively in `Halfway.Runtime`.
 
 ### Persistence and restore

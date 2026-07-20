@@ -22,6 +22,7 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<Guid, TerminalSessionView> _views = [];
     private readonly Dictionary<Guid, Button> _sidebarButtons = [];
     private readonly Dictionary<Guid, TabViewItem> _tabs = [];
+    private readonly SessionAttentionTracker _attention = new();
     private IProcessReadinessAdapter _plannerReadiness = new ShellReadinessAdapter();
     private AlertInputCoordinator _alerts;
     private readonly object _lifecyclePersistenceGate = new();
@@ -97,7 +98,7 @@ public sealed partial class MainWindow : Window
 
     private void WireView(TerminalSessionView view)
     {
-        view.GotFocus += (_, _) => _focusedSessionId = view.Metadata.Id;
+        view.GotFocus += (_, _) => SetFocusedSession(view.Metadata.Id);
         view.StartRequested += async (_, _) => await StartSessionAsync(view.Metadata);
         view.StopRequested += async (_, _) => await StopSessionAsync(view.Metadata);
         view.PowerShellRequested += async (_, _) => await ReplacePrimaryAsync(view.Metadata, LaunchProfile.PowerShell);
@@ -126,7 +127,7 @@ public sealed partial class MainWindow : Window
                 RuntimeLaunchAdapterSelection.Create(metadata.LaunchProfile == LaunchProfile.Codex ? RuntimeLaunchProfile.Codex : RuntimeLaunchProfile.PowerShell),
                 new RuntimeLaunchContext(_catalog.Workspace.WorkingDirectory, new TerminalSize(100,30)), readiness);
             if (metadata.Kind == AgentKind.Primary) await QueuePendingAlertsAsync(metadata);
-            _focusedSessionId = metadata.Id;
+            SetFocusedSession(metadata.Id);
             view.FocusInput();
         }
         catch (Exception exception)
@@ -163,7 +164,12 @@ public sealed partial class MainWindow : Window
     private void Coordinator_OutputReceived(object? sender, SessionOutput output)
     {
         var metadata = _catalog.Sessions.FirstOrDefault(x => x.SessionKey == output.Key); if (metadata is null) return;
-        DispatcherQueue.TryEnqueue(async () => { _views[metadata.Id].Append(output.Text); if (metadata.Kind == AgentKind.Primary) await TryDeliverAlertAsync(metadata); });
+        DispatcherQueue.TryEnqueue(async () =>
+        {
+            _views[metadata.Id].Append(output.Text);
+            if (_attention.RecordActivity(metadata.Id)) UpdateSessionUi(_catalog.Sessions.Single(x => x.Id == metadata.Id));
+            if (metadata.Kind == AgentKind.Primary) await TryDeliverAlertAsync(metadata);
+        });
     }
 
     private void Coordinator_StateChanged(object? sender, SessionStateChanged state)
@@ -288,8 +294,14 @@ public sealed partial class MainWindow : Window
         if (session.Kind == AgentKind.Primary) await _catalog.SelectPrimaryAsync(id);
         else await _catalog.SelectSubAgentAsync(id);
         ApplySelection();
-        _focusedSessionId = id;
+        SetFocusedSession(id);
         _views[id].FocusInput();
+    }
+
+    private void SetFocusedSession(Guid id)
+    {
+        _focusedSessionId = id;
+        if (_attention.Focus(id) && _catalog.Sessions.FirstOrDefault(x => x.Id == id) is { } session) UpdateSessionUi(session);
     }
 
     private async Task FocusTargetAsync(WorkspaceFocusTarget target)
@@ -367,8 +379,9 @@ public sealed partial class MainWindow : Window
     private void UpdateSessionUi(SessionMetadata session)
     {
         _views[session.Id].SetStatus(session.LastStatus);
-        _sidebarButtons[session.Id].Content = new TextBlock { Text = $"{StatusPresentation.Glyph(session.LastStatus)}  {session.DisplayName}" };
-        if (_tabs.TryGetValue(session.Id, out var tab)) tab.Header = $"{session.DisplayName} {StatusPresentation.Glyph(session.LastStatus)}";
+        var unread = _attention.IsUnread(session.Id) ? "  •" : string.Empty;
+        _sidebarButtons[session.Id].Content = new TextBlock { Text = $"{StatusPresentation.Glyph(session.LastStatus)}  {session.DisplayName}{unread}" };
+        if (_tabs.TryGetValue(session.Id, out var tab)) tab.Header = $"{session.DisplayName} {StatusPresentation.Glyph(session.LastStatus)}{unread}";
     }
 
     private void RefreshInformationBar()

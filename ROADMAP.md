@@ -46,7 +46,7 @@ Phase 2 persists eligible lifecycle events, atomically reserves delivery, recove
 - [x] Keyboard navigation.
 - [x] Terminal search.
 - [x] Workspace restore.
-- Unread indicators.
+- [x] Unread indicators.
 - Resizable panels.
 - Light and dark theme.
 - Windows notifications for failures where useful.
