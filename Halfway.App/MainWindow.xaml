@@ -92,12 +92,24 @@
                         <TextBlock x:Name="MainSessionTitle" Text="Planner" FontSize="16" FontWeight="SemiBold" Foreground="#F3F4F6" />
                         <TextBlock Text="PRIMARY SESSION" FontSize="11" Foreground="#7B8492" VerticalAlignment="Center" />
                     </StackPanel>
-                    <Border Grid.Row="1" Background="#0A0B0D" BorderBrush="#272C35" BorderThickness="1" CornerRadius="5" Padding="18">
-                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="10">
-                            <TextBlock Text="Codex terminal host" FontSize="18" Foreground="#D5DAE2" HorizontalAlignment="Center" />
-                            <TextBlock Text="ConPTY integration is the next technical-spike slice." FontSize="12" Foreground="#7B8492" HorizontalAlignment="Center" />
-                            <TextBlock Text="The shell is ready for a real Codex session." FontSize="12" Foreground="#7B8492" HorizontalAlignment="Center" />
-                        </StackPanel>
+                    <Border x:Name="TerminalPanel" Grid.Row="1" Background="#0A0B0D" BorderBrush="#272C35" BorderThickness="1" CornerRadius="5" SizeChanged="TerminalPanel_SizeChanged">
+                        <Grid Padding="12">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
+                                <Button Content="PowerShell" Click="PowerShellButton_Click" />
+                                <Button Content="Codex" Click="CodexButton_Click" />
+                                <Button x:Name="AlertButton" Content="Inject demo alert" Click="AlertButton_Click" />
+                                <TextBlock x:Name="TerminalStatusText" Text="QUEUED" Foreground="#F1C77A" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <ScrollViewer x:Name="TerminalScrollViewer" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                                <TextBlock x:Name="TerminalOutputText" TextWrapping="NoWrap" FontFamily="Cascadia Mono, Consolas" FontSize="13" Foreground="#D5DAE2" IsTextSelectionEnabled="True" />
+                            </ScrollViewer>
+                            <TextBox x:Name="TerminalInputText" Grid.Row="2" Margin="0,8,0,0" FontFamily="Cascadia Mono, Consolas" PlaceholderText="Type a command and press Enter" KeyDown="TerminalInputText_KeyDown" TextChanged="TerminalInputText_TextChanged" />
+                        </Grid>
                     </Border>
                 </Grid>
             </Border>

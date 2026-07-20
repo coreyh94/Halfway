@@ -54,4 +54,23 @@ public sealed class SessionRegistryTests
         Assert.Null(second.Alert);
         Assert.Single(registry.Events);
     }
+
+    [Theory]
+    [InlineData(AgentStatus.Queued)]
+    [InlineData(AgentStatus.Running)]
+    [InlineData(AgentStatus.Completed)]
+    [InlineData(AgentStatus.Failed)]
+    [InlineData(AgentStatus.Disconnected)]
+    public void Process_lifecycle_states_are_recorded(AgentStatus status)
+    {
+        var registry = new SessionRegistry();
+        var session = new AgentSession(Guid.NewGuid(), "Planner", AgentKind.Primary, null, AgentStatus.Waiting);
+        registry.Register(session);
+
+        var transition = registry.Transition(session.Id, status);
+
+        Assert.True(transition.Changed);
+        Assert.Equal(status, registry.Get(session.Id).Status);
+        Assert.Equal(status, transition.Event!.NewStatus);
+    }
 }
