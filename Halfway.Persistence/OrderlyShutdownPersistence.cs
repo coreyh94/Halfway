@@ -70,6 +70,8 @@ public sealed class OrderlyShutdownPersistence
         }
     }
 
+    public Task FlushAsync() => DrainAsync();
+
     private async Task RunAsync(Task previous, Func<Task> operation, Action<Exception>? onFailure)
     {
         await previous.ConfigureAwait(false);

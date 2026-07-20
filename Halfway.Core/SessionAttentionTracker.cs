@@ -19,4 +19,10 @@ public sealed class SessionAttentionTracker
     }
 
     public bool IsUnread(Guid sessionId) => _unreadSessionIds.Contains(sessionId);
+
+    public void Clear()
+    {
+        _unreadSessionIds.Clear();
+        FocusedSessionId = null;
+    }
 }

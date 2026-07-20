@@ -43,6 +43,35 @@ public sealed class WorkspaceCatalog
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
+    public async Task LoadKnownAsync(
+        Guid workspaceId,
+        Func<string, bool>? directoryExists = null,
+        CancellationToken cancellationToken = default)
+    {
+        directoryExists ??= Directory.Exists;
+        await _store.InitializeAsync(cancellationToken);
+        var workspace = (await _store.LoadWorkspacesAsync(cancellationToken)).SingleOrDefault(item => item.Id == workspaceId)
+            ?? throw new KeyNotFoundException($"Workspace {workspaceId} is not known.");
+        var path = Path.GetFullPath(workspace.WorkingDirectory);
+        if (!directoryExists(path)) throw new DirectoryNotFoundException($"Workspace directory '{path}' is unavailable.");
+
+        Workspace = workspace with { WorkingDirectory = path };
+        _sessions.Clear();
+        _sessions.AddRange(await _store.LoadSessionsAsync(Workspace.Id, cancellationToken));
+        _relationships.Clear();
+        _relationships.AddRange(await _store.LoadRelationshipsAsync(Workspace.Id, cancellationToken));
+        ValidateRelationships();
+        await EnsureValidSelectionsAsync(cancellationToken, persist: false);
+    }
+
+    public async Task MarkActiveAsync(CancellationToken cancellationToken = default)
+    {
+        var activatedAt = DateTimeOffset.UtcNow;
+        await _store.UpdateSelectionsAsync(Workspace.Id, Workspace.SelectedPrimarySessionId, Workspace.SelectedSubAgentSessionId, cancellationToken);
+        Workspace = Workspace with { UpdatedAtUtc = activatedAt };
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
     public async Task<SessionMetadata> CreateSubAgentAsync(string displayName, LaunchProfile profile, CancellationToken cancellationToken = default)
     {
         var name = displayName?.Trim() ?? string.Empty;
@@ -71,6 +100,14 @@ public sealed class WorkspaceCatalog
         if (index < 0) throw new KeyNotFoundException($"Session {id} is not in the catalog.");
         _sessions[index] = _sessions[index] with { LastStatus = status, UpdatedAtUtc = DateTimeOffset.UtcNow };
         await _store.UpdateStatusAsync(id, status, cancellationToken);
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void ApplyPersistedStatus(Guid id, AgentStatus status)
+    {
+        var index = _sessions.FindIndex(x => x.Id == id);
+        if (index < 0) throw new KeyNotFoundException($"Session {id} is not in the catalog.");
+        _sessions[index] = _sessions[index] with { LastStatus = status, UpdatedAtUtc = DateTimeOffset.UtcNow };
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
@@ -119,14 +156,14 @@ public sealed class WorkspaceCatalog
             throw new InvalidDataException("A registered parent relationship does not identify a workspace sub-agent.");
     }
 
-    private async Task EnsureValidSelectionsAsync(CancellationToken token)
+    private async Task EnsureValidSelectionsAsync(CancellationToken token, bool persist = true)
     {
         var primary = SelectedPrimary ?? PrimarySessions.OrderBy(x => x.DisplayOrder).FirstOrDefault();
         var sub = SelectedSubAgent ?? SubAgentSessions.OrderBy(x => x.DisplayOrder).FirstOrDefault();
         if (primary?.Id != Workspace.SelectedPrimarySessionId || sub?.Id != Workspace.SelectedSubAgentSessionId)
         {
             Workspace = Workspace with { SelectedPrimarySessionId = primary?.Id, SelectedSubAgentSessionId = sub?.Id, UpdatedAtUtc = DateTimeOffset.UtcNow };
-            await _store.UpdateSelectionsAsync(Workspace.Id, primary?.Id, sub?.Id, token);
+            if (persist) await _store.UpdateSelectionsAsync(Workspace.Id, primary?.Id, sub?.Id, token);
         }
     }
 }

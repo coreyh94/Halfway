@@ -10,6 +10,7 @@ public interface IWorkspaceStore : IAsyncDisposable
     Task<IReadOnlyList<ApplicationRun>> LoadApplicationRunsAsync(CancellationToken cancellationToken = default);
     Task<WorkspaceMetadata?> FindWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default);
     Task<WorkspaceMetadata?> FindMostRecentWorkspaceAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<WorkspaceMetadata>> LoadWorkspacesAsync(CancellationToken cancellationToken = default);
     Task InsertWorkspaceAsync(WorkspaceMetadata workspace, CancellationToken cancellationToken = default);
     Task InsertInitialWorkspaceAsync(WorkspaceMetadata workspace, IReadOnlyList<SessionMetadata> sessions, IReadOnlyList<AgentRelationship> relationships, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<SessionMetadata>> LoadSessionsAsync(Guid workspaceId, CancellationToken cancellationToken = default);

@@ -32,6 +32,7 @@ public sealed partial class TerminalSessionView : UserControl
     public void Append(string output) { var plain=Regex.Replace(output,"\\x1B(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])",string.Empty);var combined=OutputText.Text+plain;OutputText.Text=combined.Length<=MaximumOutputCharacters?combined:combined[^MaximumOutputCharacters..];if(IsSearchOpen)RefreshSearch();else{OutputScroll.UpdateLayout();OutputScroll.ChangeView(null,OutputScroll.ScrollableHeight,null,true);} }
     public void ClearOutput() { OutputText.Text=string.Empty; RefreshSearch(); }
     public void FocusInput()=>InputText.Focus(FocusState.Programmatic);
+    public void RestoreFocus() { if(IsSearchOpen) SearchText.Focus(FocusState.Programmatic); else FocusInput(); }
     public void OpenSearch() { SearchPanel.Visibility=Visibility.Visible;RefreshSearch();SearchText.Focus(FocusState.Programmatic);SearchText.SelectAll(); }
     public void MoveToNextMatch()=>MoveSearch(1);
     public void MoveToPreviousMatch()=>MoveSearch(-1);

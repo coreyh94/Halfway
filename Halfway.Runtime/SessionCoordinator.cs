@@ -30,6 +30,20 @@ public sealed class SessionCoordinator : IAsyncDisposable
     public event EventHandler<CompletionAlert>? CompletionAlertReady;
     public event EventHandler<LifecycleTransition>? LifecycleTransitioned;
 
+    public bool OwnsAnySession
+    {
+        get { lock (_ownershipGate) return _sessions.Count > 0; }
+    }
+
+    public IReadOnlyList<SessionOwnership> OwnedSessions
+    {
+        get
+        {
+            lock (_ownershipGate)
+                return _sessions.Values.Select(IdentityLocked).ToArray();
+        }
+    }
+
     public ManagedSession Get(string key)
     {
         lock (_ownershipGate) return GetStateLocked(key).Descriptor;
@@ -192,15 +206,36 @@ public sealed class SessionCoordinator : IAsyncDisposable
 
     public async Task StopAsync(string key, CancellationToken cancellationToken = default)
     {
+        SessionOwnership ownership;
+        lock (_ownershipGate) ownership = IdentityLocked(GetStateLocked(key));
+        await StopOwnedAsync(ownership, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task StopAllAsync(CancellationToken cancellationToken = default)
+    {
+        var ownerships = OwnedSessions;
+        var failures = new List<Exception>();
+        foreach (var ownership in ownerships)
+        {
+            try { await StopOwnedAsync(ownership, cancellationToken).ConfigureAwait(false); }
+            catch (KeyNotFoundException) { }
+            catch (Exception exception) { failures.Add(exception); }
+        }
+        if (failures.Count > 0) throw new AggregateException("One or more terminal sessions failed to stop cleanly.", failures);
+    }
+
+    private async Task StopOwnedAsync(SessionOwnership ownership, CancellationToken cancellationToken)
+    {
         ITerminalSession? terminal;
         ManagedSessionState state;
         lock (_ownershipGate)
         {
-            state = GetStateLocked(key);
-            _sessions.Remove(key);
+            state = GetStateLocked(ownership.Key);
+            if (state.Descriptor.Id != ownership.SessionId || state.Generation != ownership.Generation) throw StaleOwnership(ownership.Key);
+            _sessions.Remove(ownership.Key);
             terminal = state.Terminal;
             state.Terminal = null;
-            state.UserInput.Close(new SessionInputUnavailableException(key));
+            state.UserInput.Close(new SessionInputUnavailableException(ownership.Key));
             if (terminal is not null)
             {
                 terminal.OutputReceived -= state.OutputHandler;
@@ -248,6 +283,9 @@ public sealed class SessionCoordinator : IAsyncDisposable
         if (!IsWritableLocked(state)) throw StaleOwnership(state.Descriptor.Key);
         return new SessionOwnership(state.Descriptor.Key, state.Descriptor.Id, state.Generation);
     }
+
+    private static SessionOwnership IdentityLocked(ManagedSessionState state) =>
+        new(state.Descriptor.Key, state.Descriptor.Id, state.Generation);
 
     private static bool IsWritableLocked(ManagedSessionState state) =>
         state.Terminal is { } terminal &&
@@ -421,7 +459,7 @@ public sealed class SessionCoordinator : IAsyncDisposable
         var transition = _registry.Transition(state.Descriptor.Id, status);
         state.Descriptor = state.Descriptor with { Status = transition.Session.Status };
         if (transition.Changed) LifecycleTransitioned?.Invoke(this, transition);
-        StateChanged?.Invoke(this, new SessionStateChanged(state.Descriptor.Key, state.Descriptor.Status));
+        StateChanged?.Invoke(this, new SessionStateChanged(state.Descriptor.Key, state.Descriptor.Status) { Generation = state.Generation });
         return transition;
     }
 
@@ -472,4 +510,7 @@ internal sealed class SessionCoordinatorHooks
 
 public sealed record SessionOutput(string Key, string Text, Guid Generation);
 
-public sealed record SessionStateChanged(string Key, AgentStatus Status);
+public sealed record SessionStateChanged(string Key, AgentStatus Status)
+{
+    public Guid Generation { get; init; }
+}

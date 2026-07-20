@@ -185,6 +185,20 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
         return await reader.ReadAsync(cancellationToken) ? ReadWorkspace(reader) : null;
     }, cancellationToken);
 
+    public Task<IReadOnlyList<WorkspaceMetadata>> LoadWorkspacesAsync(CancellationToken cancellationToken = default) => LockedAsync(async () =>
+    {
+        await using var command = Command("SELECT Id,Name,WorkingDirectory,SelectedPrimarySessionId,SelectedSubAgentSessionId,CreatedAtUtc,UpdatedAtUtc FROM Workspaces ORDER BY UpdatedAtUtc DESC,CreatedAtUtc DESC,Id;");
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var workspaces = new List<WorkspaceMetadata>();
+        var identities = new HashSet<string>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var workspace = ReadWorkspace(reader);
+            if (identities.Add(CanonicalWorkspacePath(workspace.WorkingDirectory))) workspaces.Add(workspace);
+        }
+        return (IReadOnlyList<WorkspaceMetadata>)workspaces;
+    }, cancellationToken);
+
     public Task InsertWorkspaceAsync(WorkspaceMetadata workspace, CancellationToken cancellationToken = default) => LockedAsync(async () =>
     {
         await EnsureWorkspacePathAvailableAsync(workspace.WorkingDirectory, null, cancellationToken);

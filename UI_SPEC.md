@@ -40,6 +40,8 @@ Display only high-value workspace information:
 
 The bar must not become a dashboard.
 
+A compact native selector shows the active workspace and already-known alternatives. Items are ordered by recency, duplicate names include directory context, and missing directories are labelled unavailable and disabled. The selector is gated while a switch runs. Selecting the active item is a no-op. A native confirmation dialog warns that switching stops active sessions and discards unsent partial input whenever exact ownership or partial input exists.
+
 An **Export diagnostics** action writes the current bounded, privacy-filtered facts to the explicitly named local diagnostics path. Success shows the path in the information bar; failure shows a local error without interrupting terminal sessions. Export is never automatic and never uploads data.
 
 ## 4. Sidebar
@@ -142,3 +144,4 @@ Example:
 - Dashboard cards.
 - Arbitrary pane splitting.
 - Complex docking.
+- Workspace creation/import, deletion, archive, or background workspace controls.

@@ -10,6 +10,12 @@ public sealed class SessionRegistry
 
     public bool Contains(Guid id) => _sessions.ContainsKey(id);
 
+    public void Clear()
+    {
+        _sessions.Clear();
+        _events.Clear();
+    }
+
     public void Register(AgentSession session)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(session.DisplayName);

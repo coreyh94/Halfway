@@ -251,3 +251,9 @@ Every proposed feature must pass both tests:
 2. Can it be implemented without unnecessarily increasing Codex context?
 
 If either answer is no, the feature does not belong in Halfway.
+
+## 14. Workspace Switching
+
+Halfway presents exactly one active workspace and one set of live terminal processes. The compact information-bar selector lists existing metadata only, orders it by recency, preserves unavailable missing-directory entries, and treats Windows paths case-insensitively. It does not create or import workspaces.
+
+Selecting the active workspace does nothing. A switch with exact live ownership or nonempty partial input requires explicit confirmation. Cancellation is lossless. A confirmed switch validates the target first, stops old exact terminal generations, drains final persistence without ending the application run, discards workspace-scoped presentation state, activates the target metadata, and launches fresh processes only for its selected Planner and selected sub-agent. Launch failure keeps the target active and failed; Halfway never reattaches, rolls back by restarting, or runs a background workspace.

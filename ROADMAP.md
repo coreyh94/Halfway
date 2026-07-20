@@ -74,6 +74,17 @@ The fifth Phase 4 slice adds a concurrency-safe in-memory buffer for the newest 
 
 The sixth Phase 4 slice adds deterministic integration coverage across the registry, coordinator, readiness adapters, submitted-input queue, durable SQLite ledger, application-run recovery, notifications, transient attention, and diagnostics. Fake terminals use completion signals and write gates rather than sleeps or Codex CLI. Complete sequences cover Running/Waiting transitions, successful and failed input, single and batched completion delivery, reserve/release/retry/commit, restart recovery and deduplication, explicit stop, nonzero exit notification, restore isolation, unclean-run detection, stale ownership, session-bound queued input, and privacy-safe export. Existing real ConPTY round trips remain in the full suite.
 
+## Deterministic Workspace Switching ✓
+
+- [x] Compact selector for already-known workspaces.
+- [x] Missing-directory and case-insensitive Windows identity presentation.
+- [x] Exact ownership/partial-input confirmation with lossless cancellation.
+- [x] Stop, persistence flush, activation-generation invalidation, and fresh selected-session launch.
+- [x] Active-only registry and presentation across A -> B -> A.
+- [x] Stale callback, input, completion deadline, alert, notification, and dispatcher isolation.
+
+Workspace switching retains the one-active-workspace model. It preserves only window-level theme and panel widths, does not change schema version 4, and adds no creation/import, background processes, reattachment, automatic restart, archive, or terminal-content persistence.
+
 ## Possible Later Features
 
 Only where they preserve scope:
@@ -82,7 +93,6 @@ Only where they preserve scope:
 - Branch indicators.
 - Session timeline.
 - Cost/token display if reliably exposed.
-- Multiple workspaces.
 - Detached terminal windows.
 
 ## Permanently Out of Scope
