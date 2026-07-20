@@ -57,6 +57,8 @@ Halfway never treats restored metadata as proof that a process is alive. Previou
 
 Live sessions transition from Running to Waiting when their isolated PowerShell or Codex readiness adapter observes a safe prompt. Successfully submitted user or Halfway input returns Waiting to Running until readiness is observed again. Failed writes leave the session Waiting. Completion, failure, disconnection, and explicit-stop mapping remain process-driven.
 
+`SessionCoordinator` also observes the completion task of each exact terminal instance it owns. If ownership ends without an exit callback, a normal or cancelled completion reconciles once to Disconnected and a faulted completion reconciles once to Failed. Exit callbacks remain authoritative when present: zero exits become Completed, nonzero exits become Failed, and explicit stops or cancelled exits become Disconnected. The first ownership-ending fact atomically releases that exact terminal, so repeated callbacks, stop/exit races, writes, and resizes cannot keep or revive stale ownership. Reconciliation never scans processes, uses persisted status as liveness, reattaches, restarts, or generates a terminal message or duplicate completion alert.
+
 ## Build and run Phase 1
 
 Prerequisites:

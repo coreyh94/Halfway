@@ -100,6 +100,7 @@ Example:
 - A completed sub-agent remains visible until dismissed or archived.
 - A failed sub-agent remains visually prominent.
 - Status changes must update without requiring manual refresh.
+- A terminal whose live coordinator ownership ends must stop displaying Running or Waiting; it reconciles once to Completed, Failed, or Disconnected from owned completion facts without automatic restart.
 
 ## 8. Alert Presentation
 

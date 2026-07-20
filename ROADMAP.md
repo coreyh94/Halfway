@@ -56,13 +56,15 @@ Phase 3 adds deterministic keyboard navigation, bounded in-memory terminal searc
 ## Phase 4 — Reliability
 
 - [x] Crash-state detection and clean shutdown tracking.
-- Stale process detection.
+- [x] Stale live-session detection and reconciliation.
 - Safe input queuing.
 - Codex adapter versioning.
 - Diagnostics and exportable logs.
 - Automated integration tests around lifecycle events.
 
 The first Phase 4 slice adds schema version 4 application-run facts. An unfinished immediately preceding run records only that Halfway did not shut down cleanly. Processes are never reattached or automatically restarted; restored active metadata still becomes Disconnected. Crash detection creates no lifecycle event, alert delivery, notification, unread marker, or terminal message. Transcripts, prompts, partial input, submitted input, environment variables, and secrets remain unpersisted.
+
+The second Phase 4 slice reconciles each exact coordinator-owned terminal from its exit event and completion task. Zero, nonzero, cancelled, explicit-stop, and missing-exit outcomes retain deterministic Completed, Failed, or Disconnected mapping. Ownership release is idempotent, stale writes and resizes fail, and duplicate callbacks cannot create duplicate lifecycle events or completion alerts. No process scan, PID adoption, reattachment, automatic restart, or reliability-generated terminal message is used.
 
 ## Possible Later Features
 

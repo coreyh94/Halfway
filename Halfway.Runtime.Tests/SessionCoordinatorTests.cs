@@ -169,12 +169,14 @@ public sealed class SessionCoordinatorTests
         var alerts = new List<CompletionAlert>();
         coordinator.CompletionAlertReady += (_, alert) => alerts.Add(alert);
         var runtimeId = Guid.NewGuid();
+        var completed = StateSignal(coordinator, AgentStatus.Completed);
         await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options());
         factory.Sessions[0].EmitExit(0, false);
         factory.Sessions[0].EmitExit(0, false);
-        await Task.Delay(20);
+        await completed;
         Assert.Equal(AgentStatus.Completed, registry.Get(runtimeId).Status);
         Assert.Equal("[Halfway Alert!] Runtime completed. Continue orchestration.", Assert.Single(alerts).Message);
+        Assert.Single(registry.Events, item => item.NewStatus == AgentStatus.Completed);
     }
 
     [Fact]
@@ -206,11 +208,49 @@ public sealed class SessionCoordinatorTests
         registry.Register(new AgentSession(plannerId, "Planner", AgentKind.Primary, null));
         var coordinator = new SessionCoordinator(factory, registry);
         var runtimeId = Guid.NewGuid();
+        var exited = StateSignal(coordinator, expected);
         await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options());
         factory.Sessions[0].EmitExit(exitCode, cancelled);
-        await Task.Delay(20);
+        await exited;
         Assert.Equal(expected, registry.Get(runtimeId).Status);
         Assert.DoesNotContain(registry.Events, item => item.AlertEligible);
+    }
+
+    [Theory]
+    [InlineData(false, AgentStatus.Disconnected)]
+    [InlineData(true, AgentStatus.Failed)]
+    public async Task TerminalCompletionWithoutExitReconcilesOwnedSessionExactlyOnce(bool faulted, AgentStatus expected)
+    {
+        var factory = new FakeFactory(); var registry = new SessionRegistry(); var plannerId = Guid.NewGuid(); var runtimeId = Guid.NewGuid();
+        registry.Register(new AgentSession(plannerId, "Planner", AgentKind.Primary, null));
+        var coordinator = new SessionCoordinator(factory, registry); var reconciled = StateSignal(coordinator, expected);
+        await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options());
+
+        factory.Sessions[0].CompleteWithoutExit(faulted ? new IOException("terminal disappeared") : null);
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => coordinator.WriteAsync("runtime", "work\r"));
+        Assert.Throws<KeyNotFoundException>(() => coordinator.Resize("runtime", new TerminalSize(100, 30)));
+        await reconciled;
+
+        Assert.Equal(expected, registry.Get(runtimeId).Status);
+        Assert.Single(registry.Events, item => item.NewStatus == expected);
+        Assert.Throws<KeyNotFoundException>(() => coordinator.Get("runtime"));
+    }
+
+    [Fact]
+    public async Task StopAndExitRaceHasOneTerminalTransitionAndAtMostOneCompletionAlert()
+    {
+        var factory = new FakeFactory(); var registry = new SessionRegistry(); var plannerId = Guid.NewGuid(); var runtimeId = Guid.NewGuid();
+        registry.Register(new AgentSession(plannerId, "Planner", AgentKind.Primary, null));
+        var coordinator = new SessionCoordinator(factory, registry); var alerts = new List<CompletionAlert>();
+        coordinator.CompletionAlertReady += (_, alert) => alerts.Add(alert);
+        await coordinator.StartAsync(Descriptor("runtime", runtimeId, "Runtime", plannerId), Options());
+
+        await Task.WhenAll(coordinator.StopAsync("runtime"), Task.Run(() => factory.Sessions[0].EmitExit(0, false)));
+
+        Assert.Contains(registry.Get(runtimeId).Status, new[] { AgentStatus.Completed, AgentStatus.Disconnected });
+        Assert.Single(registry.Events, item => item.NewStatus is AgentStatus.Completed or AgentStatus.Disconnected);
+        Assert.True(alerts.Count <= 1);
+        Assert.Throws<KeyNotFoundException>(() => coordinator.Get("runtime"));
     }
 
     private static SessionCoordinator CreateCoordinator(FakeFactory factory, out Guid plannerId, out Guid runtimeId)
@@ -222,6 +262,12 @@ public sealed class SessionCoordinatorTests
     }
     private static ManagedSession Descriptor(string key, Guid id, string name, Guid? parent) => new(key, id, name, parent is null ? AgentKind.Primary : AgentKind.SubAgent, parent);
     private static TerminalLaunchOptions Options() => TerminalLaunchOptions.PowerShell(Environment.CurrentDirectory);
+    private static Task StateSignal(SessionCoordinator coordinator, AgentStatus expected)
+    {
+        var signal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        coordinator.StateChanged += (_, state) => { if (state.Status == expected) signal.TrySetResult(); };
+        return signal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
 
     private sealed class FakeFactory : ITerminalSessionFactory
     {
@@ -262,6 +308,7 @@ public sealed class SessionCoordinatorTests
         public Task StopAsync(CancellationToken cancellationToken = default) { EmitExit(0, true); return Task.CompletedTask; }
         public ValueTask DisposeAsync() { IsRunning = false; IsDisposed = true; _completion.TrySetResult(); return ValueTask.CompletedTask; }
         public void EmitOutput(string output) => OutputReceived?.Invoke(this, output);
-        public void EmitExit(int code, bool cancelled) { IsRunning = false; _completion.TrySetResult(); Exited?.Invoke(this, new TerminalExit(code, cancelled)); }
+        public void EmitExit(int code, bool cancelled) { IsRunning = false; Exited?.Invoke(this, new TerminalExit(code, cancelled)); _completion.TrySetResult(); }
+        public void CompleteWithoutExit(Exception? failure = null) { IsRunning = false; if (failure is null) _completion.TrySetResult(); else _completion.TrySetException(failure); }
     }
 }
