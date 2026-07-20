@@ -21,6 +21,7 @@ public sealed class AlertInputCoordinatorTests
         coordinator.SetUserInput(string.Empty);
 
         Assert.Equal(AlertInputCoordinator.DemonstrationAlert, coordinator.TakeReadyAlert());
+        coordinator.CommitAlertDelivery();
         Assert.False(coordinator.HasQueuedAlert);
     }
 
@@ -33,6 +34,7 @@ public sealed class AlertInputCoordinatorTests
 
         coordinator.RequestDemonstrationAlert();
         var first = coordinator.TakeReadyAlert();
+        coordinator.CommitAlertDelivery();
         coordinator.RequestDemonstrationAlert();
 
         Assert.Equal(AlertInputCoordinator.DemonstrationAlert, first);
@@ -52,5 +54,31 @@ public sealed class AlertInputCoordinatorTests
         readiness.ObserveOutput("ready");
 
         Assert.Equal(AlertInputCoordinator.DemonstrationAlert, coordinator.TakeReadyAlert());
+    }
+
+    [Fact]
+    public void Failed_delivery_releases_the_alert_for_retry()
+    {
+        var readiness = new ShellReadinessAdapter();
+        readiness.ObserveOutput("ready");
+        var coordinator = new AlertInputCoordinator(readiness);
+        coordinator.RequestDemonstrationAlert();
+
+        Assert.Equal(AlertInputCoordinator.DemonstrationAlert, coordinator.TakeReadyAlert());
+        Assert.Null(coordinator.TakeReadyAlert());
+
+        coordinator.ReleaseAlertDelivery();
+
+        Assert.Equal(AlertInputCoordinator.DemonstrationAlert, coordinator.TakeReadyAlert());
+        coordinator.CommitAlertDelivery();
+        Assert.Null(coordinator.TakeReadyAlert());
+    }
+
+    [Fact]
+    public void Delivery_cannot_be_committed_without_a_reserved_alert()
+    {
+        var coordinator = new AlertInputCoordinator(new ShellReadinessAdapter());
+
+        Assert.Throws<InvalidOperationException>(() => coordinator.CommitAlertDelivery());
     }
 }

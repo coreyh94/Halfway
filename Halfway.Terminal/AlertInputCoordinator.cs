@@ -9,6 +9,7 @@ public sealed class AlertInputCoordinator
 
     private readonly IProcessReadinessAdapter _readiness;
     private string? _queuedAlert;
+    private bool _alertInFlight;
     private bool _alertDelivered;
 
     public AlertInputCoordinator(IProcessReadinessAdapter readiness)
@@ -40,12 +41,28 @@ public sealed class AlertInputCoordinator
 
     public string? TakeReadyAlert()
     {
-        if (_queuedAlert is null || _alertDelivered || HasPartialUserInput || !_readiness.IsReadyForInput)
+        if (_queuedAlert is null || _alertDelivered || _alertInFlight || HasPartialUserInput || !_readiness.IsReadyForInput)
         {
             return null;
         }
 
-        _alertDelivered = true;
+        _alertInFlight = true;
         return _queuedAlert;
+    }
+
+    public void CommitAlertDelivery()
+    {
+        if (!_alertInFlight)
+        {
+            throw new InvalidOperationException("There is no alert delivery in progress.");
+        }
+
+        _alertInFlight = false;
+        _alertDelivered = true;
+    }
+
+    public void ReleaseAlertDelivery()
+    {
+        _alertInFlight = false;
     }
 }

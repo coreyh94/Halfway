@@ -174,8 +174,17 @@ public sealed partial class MainWindow : Window
     {
         var alert = _alertCoordinator.TakeReadyAlert();
         if (alert is null) return;
-        try { await _sessions.WriteAsync(PlannerKey, alert + "\r"); TerminalStatusText.Text = "ALERT DELIVERED"; }
-        catch { TransitionPlanner(AgentStatus.Disconnected); }
+        try
+        {
+            await _sessions.WriteAsync(PlannerKey, alert + "\r");
+            _alertCoordinator.CommitAlertDelivery();
+            TerminalStatusText.Text = "ALERT DELIVERED";
+        }
+        catch
+        {
+            _alertCoordinator.ReleaseAlertDelivery();
+            TransitionPlanner(AgentStatus.Disconnected);
+        }
     }
 
     private void TerminalPanel_SizeChanged(object sender, SizeChangedEventArgs e) => ResizeSession(PlannerKey, GetTerminalSize());
