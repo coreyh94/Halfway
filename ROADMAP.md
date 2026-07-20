@@ -29,9 +29,9 @@ Phase 0 was completed with deterministic PowerShell and `cmd.exe` coverage; Code
 
 Phase 1 restores durable workspace/session metadata while always starting newly verified processes. It does not restore terminal transcripts or reattach processes.
 
-## Phase 2 — Lifecycle Tracking
+## Phase 2 — Lifecycle Tracking ✓
 
-- Explicit parent-child registration.
+- [x] Explicit parent-child registration.
 - [x] Running, waiting, completed and failed lifecycle states.
 - [x] Durable lifecycle-event ledger.
 - [x] Restart-safe alert deduplication.
@@ -39,7 +39,7 @@ Phase 1 restores durable workspace/session metadata while always starting newly 
 - [x] Deterministic batched completions.
 - [x] Pending/Reserved/Delivered restart-safe delivery state.
 
-The first Phase 2 slice persists eligible lifecycle events, atomically reserves delivery, recovers stale reservations, retries pending alerts after restart, and never requeues delivered alerts. The next slice batches same-parent completions through a fixed event-driven window and atomically applies delivery state to every batch member. Readiness-driven tracking now distinguishes Running from Waiting while retaining process-driven completion, failure, and disconnection. Terminal transcripts and prompts remain unpersisted. Explicit parent-child registration remains the unfinished Phase 2 item.
+Phase 2 persists eligible lifecycle events, atomically reserves delivery, recovers stale reservations, retries pending alerts after restart, and never requeues delivered alerts. Same-parent completions use a fixed event-driven batching window with atomic delivery state for every member. Readiness-driven tracking distinguishes Running from Waiting while retaining process-driven completion, failure, and disconnection. Schema version 3 adds explicit same-workspace parent-child registration and uses it for live lifecycle and alert routing. Terminal transcripts and prompts remain unpersisted.
 
 ## Phase 3 — Usability
 

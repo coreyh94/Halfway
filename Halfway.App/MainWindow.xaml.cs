@@ -54,7 +54,7 @@ public sealed partial class MainWindow : Window
             await _catalog.InitializeAsync(GetWorkingDirectory(), runtimeProfile);
             await _ledger.RecoverAsync();
             foreach (var session in _catalog.Sessions.OrderBy(x => x.Kind).ThenBy(x => x.DisplayOrder))
-                _registry.Register(new AgentSession(session.Id, session.DisplayName, session.Kind, session.ParentSessionId, session.LastStatus));
+                _registry.Register(new AgentSession(session.Id, session.DisplayName, session.Kind, _catalog.GetParentSessionId(session.Id), session.LastStatus));
             BuildWorkspaceUi(); RefreshInformationBar();
             if (_catalog.SelectedPrimary is { } primary) await StartSessionAsync(primary);
             if (_catalog.SelectedSubAgent is { } subAgent) await StartSessionAsync(subAgent);
@@ -115,7 +115,7 @@ public sealed partial class MainWindow : Window
             : metadata.LaunchProfile == LaunchProfile.Codex ? new CodexReadinessAdapter() : new ShellReadinessAdapter();
         try
         {
-            await _coordinator.StartAsync(new ManagedSession(metadata.SessionKey, metadata.Id, metadata.DisplayName, metadata.Kind, metadata.ParentSessionId),
+            await _coordinator.StartAsync(new ManagedSession(metadata.SessionKey, metadata.Id, metadata.DisplayName, metadata.Kind, _catalog.GetParentSessionId(metadata.Id)),
                 RuntimeLaunchAdapterSelection.Create(metadata.LaunchProfile == LaunchProfile.Codex ? RuntimeLaunchProfile.Codex : RuntimeLaunchProfile.PowerShell),
                 new RuntimeLaunchContext(_catalog.Workspace.WorkingDirectory, new TerminalSize(100,30)), readiness);
             if (metadata.Kind == AgentKind.Primary) await QueuePendingAlertsAsync(metadata);
@@ -299,7 +299,7 @@ public sealed partial class MainWindow : Window
             try
             {
                 var created = await _catalog.CreateSubAgentAsync(name.Text, profile.SelectedIndex == 1 ? LaunchProfile.Codex : LaunchProfile.PowerShell);
-                _registry.Register(new AgentSession(created.Id, created.DisplayName, created.Kind, created.ParentSessionId)); AddSessionUi(created); ApplySelection(); await StartSessionAsync(created); return;
+                _registry.Register(new AgentSession(created.Id, created.DisplayName, created.Kind, _catalog.GetParentSessionId(created.Id))); AddSessionUi(created); ApplySelection(); await StartSessionAsync(created); return;
             }
             catch (Exception exception) { error.Text = exception.Message; }
         }

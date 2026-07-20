@@ -65,7 +65,9 @@ MainWindow            -> fixed-layout presentation and user interaction
 
 ### Persistence and restore
 
-Schema version 2 preserves the version 1 `Workspaces` and `Sessions` data and adds `LifecycleEvents` and `AlertDeliveries` in an idempotent transaction. Foreign keys are enabled, and `PRAGMA user_version` advances only after migration succeeds. Lifecycle events contain stable IDs, session/parent identity, the status transition, occurrence time, and eligibility. Delivery records contain only the deterministic message and `Pending`, `Reserved`, or `Delivered` state with reservation, delivery, and update timestamps.
+Schema version 3 preserves the version 1 `Workspaces` and `Sessions` data and version 2 `LifecycleEvents` and `AlertDeliveries`. It adds `AgentRelationships`, transactionally backfills existing non-null parent links, and enforces that parent and child belong to the same workspace. Foreign keys are enabled, and `PRAGMA user_version` advances only after migration succeeds. Lifecycle events contain stable IDs, session/parent identity, the status transition, occurrence time, and eligibility. Delivery records contain only the deterministic message and `Pending`, `Reserved`, or `Delivered` state with reservation, delivery, and update timestamps.
+
+New sub-agent creation inserts session metadata and its relationship in one transaction. `WorkspaceCatalog` loads and validates exactly one registered primary parent for every sub-agent, and that explicit relationship supplies live registry, coordinator, lifecycle-event, and alert-routing identity. The legacy `Sessions.ParentSessionId` value remains as compatible metadata and must agree with the registered relationship.
 
 The production database is `%LOCALAPPDATA%\Halfway\halfway.db`. It stores deterministic eligible alert messages but no terminal output, transcripts, prompts, secrets, process handles, or process IDs.
 

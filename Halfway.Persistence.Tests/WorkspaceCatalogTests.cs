@@ -13,6 +13,8 @@ public sealed class WorkspaceCatalogTests
         var first = await catalog.CreateSubAgentAsync("Tests", LaunchProfile.Codex);
         var second = await catalog.CreateSubAgentAsync("Docs", LaunchProfile.PowerShell);
         Assert.NotEqual(first.Id, second.Id); Assert.StartsWith("session-", first.SessionKey); Assert.Equal(catalog.SelectedPrimary!.Id, first.ParentSessionId);
+        Assert.Equal(catalog.SelectedPrimary.Id, catalog.GetParentSessionId(first.Id));
+        Assert.Contains(catalog.Relationships, x => x.ChildSessionId == first.Id && x.ParentSessionId == catalog.SelectedPrimary.Id);
         Assert.Equal(second.Id, catalog.SelectedSubAgent!.Id); Assert.True(second.DisplayOrder > first.DisplayOrder);
     }
 

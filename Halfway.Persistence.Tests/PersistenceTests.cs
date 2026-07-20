@@ -9,13 +9,13 @@ public sealed class PersistenceTests : IAsyncDisposable
     private string Database => Path.Combine(_directory, "test.db");
 
     [Fact]
-    public async Task EmptyDatabaseInitializesAndReopensAtVersionTwo()
+    public async Task EmptyDatabaseInitializesAndReopensAtVersionThree()
     {
         await using (var store = new SqliteWorkspaceStore(Database)) await store.InitializeAsync();
         await using var reopened = new SqliteWorkspaceStore(Database); await reopened.InitializeAsync();
         await using var connection = new SqliteConnection($"Data Source={Database}"); await connection.OpenAsync();
         await using var command = connection.CreateCommand(); command.CommandText = "PRAGMA user_version;";
-        Assert.Equal(2L, await command.ExecuteScalarAsync());
+        Assert.Equal(3L, await command.ExecuteScalarAsync());
     }
 
     [Fact]
@@ -43,6 +43,7 @@ public sealed class PersistenceTests : IAsyncDisposable
         var workspace = await reopened.FindWorkspaceAsync(_directory); var sessions = await reopened.LoadSessionsAsync(workspaceId);
         Assert.Equal(workspaceId, workspace!.Id); Assert.Equal(plannerId, workspace.SelectedPrimarySessionId); Assert.Equal(runtimeId, workspace.SelectedSubAgentSessionId);
         Assert.Equal([plannerId, runtimeId], sessions.Select(x => x.Id));
+        Assert.Equal(new AgentRelationship(workspaceId, plannerId, runtimeId, sessions[1].CreatedAtUtc), Assert.Single(await reopened.LoadRelationshipsAsync(workspaceId)));
     }
 
     [Fact]
@@ -131,6 +132,20 @@ public sealed class PersistenceTests : IAsyncDisposable
         await using var store = new SqliteWorkspaceStore(Database); await store.InitializeAsync(); var now = DateTimeOffset.UtcNow;
         var orphan = new SessionMetadata(Guid.NewGuid(), Guid.NewGuid(), "orphan", "Orphan", AgentKind.SubAgent, null, LaunchProfile.PowerShell, 0, AgentStatus.Queued, now, now);
         await Assert.ThrowsAsync<SqliteException>(() => store.InsertSessionAsync(orphan));
+    }
+
+    [Fact]
+    public async Task RelationshipRegistrationIsAtomicAndEnforcesWorkspaceIdentity()
+    {
+        await using var store = new SqliteWorkspaceStore(Database); var catalog = new WorkspaceCatalog(store); await catalog.InitializeAsync(_directory, LaunchProfile.PowerShell);
+        var now = DateTimeOffset.UtcNow; var childId = Guid.NewGuid(); var invalidParent = Guid.NewGuid();
+        var session = new SessionMetadata(childId, catalog.Workspace.Id, $"session-{childId:N}", "Invalid", AgentKind.SubAgent, invalidParent, LaunchProfile.PowerShell, 10, AgentStatus.Queued, now, now);
+        var relationship = new AgentRelationship(catalog.Workspace.Id, invalidParent, childId, now);
+
+        await Assert.ThrowsAsync<SqliteException>(() => store.InsertSessionWithRelationshipAsync(session, relationship));
+
+        Assert.DoesNotContain(await store.LoadSessionsAsync(catalog.Workspace.Id), x => x.Id == childId);
+        Assert.DoesNotContain(await store.LoadRelationshipsAsync(catalog.Workspace.Id), x => x.ChildSessionId == childId);
     }
 
     [Fact]

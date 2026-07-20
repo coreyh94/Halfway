@@ -6,7 +6,7 @@ namespace Halfway.Persistence;
 
 public sealed class SqliteWorkspaceStore : IWorkspaceStore
 {
-    public const int SchemaVersion = 2;
+    public const int SchemaVersion = 3;
     private readonly SqliteConnection _connection;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private bool _disposed;
@@ -73,6 +73,26 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
                 PRAGMA user_version = 2;
                 """, cancellationToken, transaction);
             await transaction.CommitAsync(cancellationToken);
+            version = 2;
+        }
+        if (version == 2)
+        {
+            await using var transaction = await _connection.BeginTransactionAsync(cancellationToken);
+            await ExecuteAsync("""
+                CREATE UNIQUE INDEX IF NOT EXISTS IX_Sessions_WorkspaceId_Id ON Sessions(WorkspaceId,Id);
+                CREATE TABLE IF NOT EXISTS AgentRelationships (
+                    ChildSessionId TEXT PRIMARY KEY,
+                    WorkspaceId TEXT NOT NULL,
+                    ParentSessionId TEXT NOT NULL,
+                    RegisteredAtUtc TEXT NOT NULL,
+                    CHECK(ChildSessionId <> ParentSessionId),
+                    FOREIGN KEY(WorkspaceId,ParentSessionId) REFERENCES Sessions(WorkspaceId,Id),
+                    FOREIGN KEY(WorkspaceId,ChildSessionId) REFERENCES Sessions(WorkspaceId,Id));
+                INSERT OR IGNORE INTO AgentRelationships(ChildSessionId,WorkspaceId,ParentSessionId,RegisteredAtUtc)
+                    SELECT Id,WorkspaceId,ParentSessionId,CreatedAtUtc FROM Sessions WHERE ParentSessionId IS NOT NULL;
+                PRAGMA user_version = 3;
+                """, cancellationToken, transaction);
+            await transaction.CommitAsync(cancellationToken);
         }
     }, cancellationToken);
 
@@ -91,7 +111,7 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
         await command.ExecuteNonQueryAsync(cancellationToken);
     }, cancellationToken);
 
-    public Task InsertInitialWorkspaceAsync(WorkspaceMetadata workspace, IReadOnlyList<SessionMetadata> sessions, CancellationToken cancellationToken = default) => LockedAsync(async () =>
+    public Task InsertInitialWorkspaceAsync(WorkspaceMetadata workspace, IReadOnlyList<SessionMetadata> sessions, IReadOnlyList<AgentRelationship> relationships, CancellationToken cancellationToken = default) => LockedAsync(async () =>
     {
         await using var transaction = await _connection.BeginTransactionAsync(cancellationToken);
         await using (var workspaceCommand = Command("INSERT INTO Workspaces VALUES($id,$name,$path,$primary,$sub,$created,$updated);"))
@@ -102,6 +122,11 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
         {
             await using var sessionCommand = Command("INSERT INTO Sessions VALUES($id,$workspace,$key,$name,$kind,$parent,$profile,$order,$status,$created,$updated);");
             sessionCommand.Transaction = (SqliteTransaction)transaction; Add(sessionCommand, session); await sessionCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+        foreach (var relationship in relationships)
+        {
+            await using var relationshipCommand = Command("INSERT INTO AgentRelationships(ChildSessionId,WorkspaceId,ParentSessionId,RegisteredAtUtc) VALUES($child,$workspace,$parent,$registered);");
+            relationshipCommand.Transaction = (SqliteTransaction)transaction; Add(relationshipCommand, relationship); await relationshipCommand.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
     }, cancellationToken);
@@ -121,6 +146,30 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
         await using var command = Command("INSERT INTO Sessions VALUES($id,$workspace,$key,$name,$kind,$parent,$profile,$order,$status,$created,$updated);");
         Add(command, session);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }, cancellationToken);
+
+    public Task InsertSessionWithRelationshipAsync(SessionMetadata session, AgentRelationship relationship, CancellationToken cancellationToken = default) => LockedAsync(async () =>
+    {
+        if (session.Id != relationship.ChildSessionId || session.WorkspaceId != relationship.WorkspaceId || session.ParentSessionId != relationship.ParentSessionId)
+            throw new ArgumentException("Session and relationship identity must match.", nameof(relationship));
+        await using var transaction = await _connection.BeginTransactionAsync(cancellationToken);
+        await using (var sessionCommand = Command("INSERT INTO Sessions VALUES($id,$workspace,$key,$name,$kind,$parent,$profile,$order,$status,$created,$updated);"))
+        {
+            sessionCommand.Transaction = (SqliteTransaction)transaction; Add(sessionCommand, session); await sessionCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var relationshipCommand = Command("INSERT INTO AgentRelationships(ChildSessionId,WorkspaceId,ParentSessionId,RegisteredAtUtc) VALUES($child,$workspace,$parent,$registered);"))
+        {
+            relationshipCommand.Transaction = (SqliteTransaction)transaction; Add(relationshipCommand, relationship); await relationshipCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+    }, cancellationToken);
+
+    public Task<IReadOnlyList<AgentRelationship>> LoadRelationshipsAsync(Guid workspaceId, CancellationToken cancellationToken = default) => LockedAsync(async () =>
+    {
+        await using var command = Command("SELECT WorkspaceId,ParentSessionId,ChildSessionId,RegisteredAtUtc FROM AgentRelationships WHERE WorkspaceId=$workspace ORDER BY RegisteredAtUtc,ChildSessionId;");
+        command.Parameters.AddWithValue("$workspace", workspaceId.ToString()); await using var reader = await command.ExecuteReaderAsync(cancellationToken); var relationships = new List<AgentRelationship>();
+        while (await reader.ReadAsync(cancellationToken)) relationships.Add(new AgentRelationship(Guid.Parse(reader.GetString(0)),Guid.Parse(reader.GetString(1)),Guid.Parse(reader.GetString(2)),DateTimeOffset.Parse(reader.GetString(3),CultureInfo.InvariantCulture)));
+        return (IReadOnlyList<AgentRelationship>)relationships;
     }, cancellationToken);
 
     public Task UpdateSessionAsync(SessionMetadata session, CancellationToken cancellationToken = default) => LockedAsync(async () =>
@@ -244,6 +293,7 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
     private static void Add(SqliteCommand c, WorkspaceMetadata w) { c.Parameters.AddWithValue("$id",w.Id.ToString());c.Parameters.AddWithValue("$name",w.DisplayName);c.Parameters.AddWithValue("$path",Path.GetFullPath(w.WorkingDirectory));c.Parameters.AddWithValue("$primary",Db(w.SelectedPrimarySessionId));c.Parameters.AddWithValue("$sub",Db(w.SelectedSubAgentSessionId));c.Parameters.AddWithValue("$created",Format(w.CreatedAtUtc));c.Parameters.AddWithValue("$updated",Format(w.UpdatedAtUtc)); }
     private static void Add(SqliteCommand c, SessionMetadata s) { c.Parameters.AddWithValue("$id",s.Id.ToString());c.Parameters.AddWithValue("$workspace",s.WorkspaceId.ToString());c.Parameters.AddWithValue("$key",s.SessionKey);c.Parameters.AddWithValue("$name",s.DisplayName);c.Parameters.AddWithValue("$kind",(int)s.Kind);c.Parameters.AddWithValue("$parent",Db(s.ParentSessionId));c.Parameters.AddWithValue("$profile",(int)s.LaunchProfile);c.Parameters.AddWithValue("$order",s.DisplayOrder);c.Parameters.AddWithValue("$status",(int)s.LastStatus);c.Parameters.AddWithValue("$created",Format(s.CreatedAtUtc));c.Parameters.AddWithValue("$updated",Format(s.UpdatedAtUtc)); }
     private static void Add(SqliteCommand c, LifecycleEvent e) { c.Parameters.AddWithValue("$id",e.Id.ToString());c.Parameters.AddWithValue("$session",e.SessionId.ToString());c.Parameters.AddWithValue("$parent",Db(e.ParentSessionId));c.Parameters.AddWithValue("$previous",(int)e.PreviousStatus);c.Parameters.AddWithValue("$new",(int)e.NewStatus);c.Parameters.AddWithValue("$occurred",Format(e.OccurredAt));c.Parameters.AddWithValue("$eligible",e.AlertEligible ? 1 : 0); }
+    private static void Add(SqliteCommand c, AgentRelationship r) { c.Parameters.AddWithValue("$child",r.ChildSessionId.ToString());c.Parameters.AddWithValue("$workspace",r.WorkspaceId.ToString());c.Parameters.AddWithValue("$parent",r.ParentSessionId.ToString());c.Parameters.AddWithValue("$registered",Format(r.RegisteredAtUtc)); }
 
     private Task<bool> ChangeStateAsync(Guid eventId, AlertDeliveryState expected, AlertDeliveryState next, DateTimeOffset at, string timestampAssignment, CancellationToken token) => LockedAsync(async () =>
     {
