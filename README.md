@@ -61,6 +61,8 @@ Live sessions transition from Running to Waiting when their isolated PowerShell 
 
 Pressing Enter submits the current terminal input to a dedicated in-memory queue for that exact live session. Each queue holds at most eight accepted submissions, including an in-flight write, and preserves FIFO order. If full, the newest submission is rejected with a local input error; older accepted input is not dropped. Completed, Failed, Disconnected, and non-owned sessions reject submissions, while stop, exit, cancellation, or ownership replacement resolves queued work without replay to another terminal. Waiting changes to Running only after its submitted write succeeds; failed writes leave Waiting unchanged. Partial text is never queued, and queued or submitted user input is never persisted or restored. Automatic Halfway alerts remain a separate channel governed by readiness, partial-input blocking, and durable reserve/commit/release rules.
 
+Process readiness adapters expose stable identities: PowerShell uses `shell` v1 and Codex uses `codex` v1. Launch-profile-to-adapter selection is isolated in the runtime layer, and unknown identifiers or versions fail without silently falling back. Codex v1 remains conservative: it requires observed Codex identity plus a safe prompt, supports split and ANSI-decorated output chunks, and resets readiness after successful input. Failed writes do not reset readiness or clear Waiting. Output sampled for readiness remains bounded in memory and is never persisted.
+
 ## Build and run Phase 1
 
 Prerequisites:
@@ -88,7 +90,7 @@ Runtime launches PowerShell by default. Set `HALFWAY_RUNTIME_LAUNCH=codex` to la
 
 - Terminal output is a bounded 64 KiB raw-text view with common ANSI control sequences removed; it is not a full terminal emulator.
 - Input is line-oriented. Advanced terminal keys, mouse input, complete scrollback, copy/paste semantics, and accurate screen-buffer rendering require an established terminal control in a later slice. Search is limited to the bounded in-memory raw-text view.
-- Codex readiness uses an isolated, deliberately conservative output heuristic and may need adapter updates as Codex output changes.
+- Codex readiness uses the isolated, deliberately conservative `codex` v1 adapter and may require a new explicit adapter version as Codex output changes.
 - Sessions are metadata-persisted but processes are never reattached and terminal content is never restored.
 - Only one workspace (selected by working directory) is presented at a time; no delete/archive workflow is included.
 - Lifecycle state remains process-based; the first Phase 2 slice now durably records lifecycle events and restart-safe alert delivery.

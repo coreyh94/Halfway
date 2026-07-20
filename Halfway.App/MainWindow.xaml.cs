@@ -26,7 +26,7 @@ public sealed partial class MainWindow : Window
     private readonly SessionAttentionTracker _attention = new();
     private readonly FailureNotificationPolicy _failureNotifications = new();
     private readonly WindowsFailureNotifier _windowsNotifications;
-    private IProcessReadinessAdapter _plannerReadiness = new ShellReadinessAdapter();
+    private IProcessReadinessAdapter _plannerReadiness = RuntimeReadinessAdapterSelection.Create(RuntimeLaunchProfile.PowerShell);
     private AlertInputCoordinator _alerts;
     private readonly object _lifecyclePersistenceGate = new();
     private Task _lifecyclePersistence = Task.CompletedTask;
@@ -121,19 +121,18 @@ public sealed partial class MainWindow : Window
     private async Task StartSessionAsync(SessionMetadata metadata)
     {
         var view = _views[metadata.Id]; view.ClearOutput();
+        var runtimeProfile = metadata.LaunchProfile == LaunchProfile.Codex ? RuntimeLaunchProfile.Codex : RuntimeLaunchProfile.PowerShell;
+        var readiness = RuntimeReadinessAdapterSelection.Create(runtimeProfile);
         if (metadata.Kind == AgentKind.Primary)
         {
-            _plannerReadiness = metadata.LaunchProfile == LaunchProfile.Codex ? new CodexReadinessAdapter() : new ShellReadinessAdapter();
+            _plannerReadiness = readiness;
             _alerts = new AlertInputCoordinator(_plannerReadiness);
             _alerts.SetUserInput(view.PartialInput);
         }
-        var readiness = metadata.Kind == AgentKind.Primary
-            ? _plannerReadiness
-            : metadata.LaunchProfile == LaunchProfile.Codex ? new CodexReadinessAdapter() : new ShellReadinessAdapter();
         try
         {
             await _coordinator.StartAsync(new ManagedSession(metadata.SessionKey, metadata.Id, metadata.DisplayName, metadata.Kind, _catalog.GetParentSessionId(metadata.Id)),
-                RuntimeLaunchAdapterSelection.Create(metadata.LaunchProfile == LaunchProfile.Codex ? RuntimeLaunchProfile.Codex : RuntimeLaunchProfile.PowerShell),
+                RuntimeLaunchAdapterSelection.Create(runtimeProfile),
                 new RuntimeLaunchContext(_catalog.Workspace.WorkingDirectory, new TerminalSize(100,30)), readiness);
             if (metadata.Kind == AgentKind.Primary) await QueuePendingAlertsAsync(metadata);
             SetFocusedSession(metadata.Id);

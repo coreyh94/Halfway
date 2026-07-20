@@ -58,7 +58,7 @@ Phase 3 adds deterministic keyboard navigation, bounded in-memory terminal searc
 - [x] Crash-state detection and clean shutdown tracking.
 - [x] Stale live-session detection and reconciliation.
 - [x] Safe in-memory submitted user-input queuing.
-- Codex adapter versioning.
+- [x] Versioned process readiness adapters.
 - Diagnostics and exportable logs.
 - Automated integration tests around lifecycle events.
 
@@ -67,6 +67,8 @@ The first Phase 4 slice adds schema version 4 application-run facts. An unfinish
 The second Phase 4 slice reconciles each exact coordinator-owned terminal from its exit event and completion task. Zero, nonzero, cancelled, explicit-stop, and missing-exit outcomes retain deterministic Completed, Failed, or Disconnected mapping. Ownership release is idempotent, stale writes and resizes fail, and duplicate callbacks cannot create duplicate lifecycle events or completion alerts. No process scan, PID adoption, reattachment, automatic restart, or reliability-generated terminal message is used.
 
 The third Phase 4 slice adds a per-live-session FIFO queue for fully submitted user input only. Capacity is eight entries including the in-flight write; overflow rejects the newest entry with a visible local error. Queue generations are bound to exact terminal ownership and close on cancellation, stop, or exit, so input never crosses to a sibling or replacement. Partial and submitted input remain unpersisted. Automatic alerts stay separate and retain readiness, partial-input blocking, and durable delivery semantics.
+
+The fourth Phase 4 slice gives readiness adapters stable `shell` v1 and `codex` v1 identities, exact catalog selection, and safe rejection of unsupported versions. Runtime launch-profile selection owns adapter construction rather than `MainWindow`. Codex v1 remains conservative while supporting split and ANSI-decorated chunks. Readiness output is bounded in memory and is not persisted.
 
 ## Possible Later Features
 

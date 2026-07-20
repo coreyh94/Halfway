@@ -177,6 +177,8 @@ Output parsing must be isolated behind an adapter because Codex output formats m
 
 The runtime owns one `IProcessReadinessAdapter` per live session. Process start establishes `Running`; observing a safe prompt transitions it to `Waiting`; a successful terminal write resets readiness and transitions it back to `Running`. Failed writes do not falsely clear `Waiting`. The same Planner adapter supplies the alert-safety boundary, so lifecycle presentation and automatic input use one readiness fact without weakening the adapter abstraction.
 
+Every readiness adapter exposes an immutable identifier and positive version through `IProcessReadinessAdapter`. The supported identities are `shell` v1 and `codex` v1. `ProcessReadinessAdapterCatalog` constructs only exact supported identities and rejects unknown identifiers or versions without fallback. `RuntimeReadinessAdapterSelection` owns the existing launch-profile mapping, keeping concrete adapter selection out of `MainWindow`. Codex v1 retains the conservative identity-plus-safe-prompt rule, accumulates only a bounded in-memory tail so identity and ANSI-decorated prompts may span chunks, and clears that tail after successful input. Neither sampled output nor readiness identity is currently persisted; if identity metadata is added later, only identifier and version may be stored.
+
 ### AlertDispatcher
 
 - Sends short messages to parent sessions.

@@ -1,4 +1,5 @@
 using Halfway.Terminal;
+using Halfway.Terminal.Readiness;
 using Xunit;
 
 namespace Halfway.Runtime.Tests;
@@ -45,5 +46,16 @@ public sealed class RuntimeLaunchAdapterTests
 
         Assert.Contains("powershell", exception.Message, StringComparison.Ordinal);
         Assert.Contains("codex", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(RuntimeLaunchProfile.PowerShell, typeof(ShellReadinessAdapter), "shell", 1)]
+    [InlineData(RuntimeLaunchProfile.Codex, typeof(CodexReadinessAdapter), "codex", 1)]
+    public void LaunchProfileSelectsVersionedReadinessAdapter(RuntimeLaunchProfile profile, Type expectedType, string identifier, int version)
+    {
+        var adapter = RuntimeReadinessAdapterSelection.Create(profile);
+
+        Assert.IsType(expectedType, adapter);
+        Assert.Equal(new ProcessReadinessAdapterIdentity(identifier, version), adapter.Identity);
     }
 }
