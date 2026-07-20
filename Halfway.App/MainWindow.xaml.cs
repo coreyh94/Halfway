@@ -14,9 +14,10 @@ namespace Halfway.App;
 
 public sealed partial class MainWindow : Window
 {
-    private static readonly TimeSpan CompletionBatchWindow = TimeSpan.FromMilliseconds(250);
     private readonly SessionRegistry _registry = new();
     private readonly SessionCoordinator _coordinator;
+    private readonly AlertDeliveryCoordinator _alertDelivery;
+    private readonly CompletionBatchScheduler _completionBatches;
     private readonly IWorkspaceStore _store;
     private readonly WorkspaceCatalog _catalog;
     private readonly DurableAlertLedger _ledger;
@@ -32,7 +33,7 @@ public sealed partial class MainWindow : Window
     private AlertInputCoordinator _alerts;
     private readonly OrderlyShutdownPersistence _shutdownPersistence = new();
     private DurableAlertBatch? _currentBatch;
-    private CancellationTokenSource? _batchDelay;
+    private readonly Queue<DurableAlertBatch> _preparedBatches = new();
     private bool _initialized;
     private bool _syncingSelection;
     private Guid? _focusedSessionId;
@@ -46,6 +47,8 @@ public sealed partial class MainWindow : Window
         _catalog = new WorkspaceCatalog(_store);
         _ledger = new DurableAlertLedger(_store);
         _coordinator = new SessionCoordinator(new ConPtyTerminalSessionFactory(), _registry);
+        _alertDelivery = new AlertDeliveryCoordinator(_coordinator);
+        _completionBatches = new CompletionBatchScheduler(new SystemCompletionBatchTimer(), CompletionBatchDueAsync);
         _coordinator.OutputReceived += Coordinator_OutputReceived;
         _coordinator.StateChanged += Coordinator_StateChanged;
         _coordinator.LifecycleTransitioned += Coordinator_LifecycleTransitioned;
@@ -117,7 +120,7 @@ public sealed partial class MainWindow : Window
         view.StopRequested += async (_, _) => await StopSessionAsync(view.Metadata);
         view.PowerShellRequested += async (_, _) => await ReplacePrimaryAsync(view.Metadata, LaunchProfile.PowerShell);
         view.CodexRequested += async (_, _) => await ReplacePrimaryAsync(view.Metadata, LaunchProfile.Codex);
-        view.DemoAlertRequested += async (_, _) => { _alerts.RequestDemonstrationAlert(); await TryDeliverAlertAsync(view.Metadata); };
+        view.DemoAlertRequested += async (_, _) => { _alerts.RequestAlert(Guid.Empty, view.Metadata.Id, AlertInputCoordinator.DemonstrationAlert); await TryDeliverAlertAsync(view.Metadata); };
         view.InputSubmitted += async (_, input) => await SendInputAsync(view.Metadata, input);
         view.ResizeRequested += (_, size) => { try { _coordinator.Resize(view.Metadata.SessionKey, size); } catch (KeyNotFoundException) { } };
         if (view.Metadata.Kind == AgentKind.Primary) view.PartialInputChanged += (_, _) => _alerts.SetUserInput(view.PartialInput);
@@ -135,6 +138,8 @@ public sealed partial class MainWindow : Window
             _plannerReadiness = readiness;
             _alerts = new AlertInputCoordinator(_plannerReadiness);
             _alerts.SetUserInput(view.PartialInput);
+            _currentBatch = null;
+            _preparedBatches.Clear();
         }
         try
         {
@@ -185,6 +190,7 @@ public sealed partial class MainWindow : Window
         var metadata = _catalog.Sessions.FirstOrDefault(x => x.SessionKey == output.Key); if (metadata is null) return;
         DispatcherQueue.TryEnqueue(async () =>
         {
+            if (!_coordinator.IsCurrentOwnership(output.Key, output.Generation)) return;
             _views[metadata.Id].Append(output.Text);
             if (_attention.RecordActivity(metadata.Id)) UpdateSessionUi(_catalog.Sessions.Single(x => x.Id == metadata.Id));
             if (metadata.Kind == AgentKind.Primary) await TryDeliverAlertAsync(metadata);
@@ -232,7 +238,7 @@ public sealed partial class MainWindow : Window
             {
                 if (_catalog.SelectedPrimary?.Id == alert.ParentSessionId && _catalog.SelectedPrimary is { } parent)
                 {
-                    SchedulePendingAlerts(parent);
+                    SchedulePendingAlerts(parent, transition.Event!.OccurredAt);
                 }
             });
         }
@@ -240,61 +246,71 @@ public sealed partial class MainWindow : Window
 
     private async Task TryDeliverAlertAsync(SessionMetadata parent)
     {
-        var alert = _alerts.TakeReadyAlertReservation(); if (alert is null) return;
-        var eventIds = alert.EventId == Guid.Empty
-            ? Array.Empty<Guid>()
-            : _currentBatch is { } batch && batch.ReservationId == alert.EventId ? batch.EventIds : [alert.EventId];
-        if (eventIds.Count > 0 && !await _ledger.ReserveAsync(eventIds))
+        var eventIds = _currentBatch is { ParentSessionId: var parentId } batch && parentId == parent.Id
+            ? batch.EventIds
+            : Array.Empty<Guid>();
+        var outcome = await _alertDelivery.TryDeliverAsync(
+            parent.Id,
+            parent.SessionKey,
+            eventIds,
+            _alerts,
+            (ids, token) => _ledger.ReserveAsync(ids, token),
+            (ids, token) => _ledger.MarkWriteSucceededAsync(ids, token),
+            (ids, token) => _ledger.CommitAsync(ids, token),
+            (ids, token) => _ledger.ReleaseAsync(ids, token));
+        _diagnostics.Record("alert", outcome.ToString(), DateTimeOffset.UtcNow, new Dictionary<string, string>
         {
-            _diagnostics.Record("alert", "reservation-skipped", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["sessionId"] = parent.Id.ToString() });
-            _alerts.CommitAlertDelivery();
+            ["sessionId"] = parent.Id.ToString(),
+            ["eventCount"] = eventIds.Count.ToString(),
+        });
+        if (outcome is AlertDeliveryOutcome.Delivered or AlertDeliveryOutcome.ReservationUnavailable or
+            AlertDeliveryOutcome.ReservationIndeterminate or AlertDeliveryOutcome.WriteIndeterminate or
+            AlertDeliveryOutcome.CommitIndeterminate or AlertDeliveryOutcome.CommitPending)
+        {
             _currentBatch = null;
-            await QueuePendingAlertsAsync(parent);
-            return;
-        }
-        try
-        {
-            await _coordinator.WriteAsync(parent.SessionKey, alert.Message + "\r");
-            if (eventIds.Count > 0 && !await _ledger.CommitAsync(eventIds)) throw new InvalidOperationException("Alert delivery could not be committed.");
-            _diagnostics.Record("alert", "delivery-committed", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["sessionId"] = parent.Id.ToString(), ["eventCount"] = eventIds.Count.ToString() });
-            _alerts.CommitAlertDelivery();
-            _currentBatch = null;
-            await QueuePendingAlertsAsync(parent);
-        }
-        catch
-        {
-            if (eventIds.Count > 0) await _ledger.ReleaseAsync(eventIds);
-            _diagnostics.Record("alert", "delivery-released", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["sessionId"] = parent.Id.ToString(), ["eventCount"] = eventIds.Count.ToString() });
-            _alerts.ReleaseAlertDelivery();
+            await ActivateNextPreparedBatchAsync(parent);
         }
     }
 
     private async Task QueuePendingAlertsAsync(SessionMetadata parent)
     {
         var batch = await _ledger.CreatePendingBatchAsync(parent.Id); if (batch is null) return;
-        _currentBatch = batch;
-        _alerts.RequestAlert(batch.ReservationId, batch.Message);
+        _preparedBatches.Enqueue(batch);
+        await ActivateNextPreparedBatchAsync(parent);
+    }
+
+    private async Task QueuePendingAlertsAsync(SessionMetadata parent, DateTimeOffset occurredBeforeUtc)
+    {
+        var assigned = _preparedBatches.SelectMany(item => item.EventIds)
+            .Concat(_currentBatch?.EventIds ?? Array.Empty<Guid>())
+            .ToArray();
+        var batch = await _ledger.CreatePendingBatchAsync(parent.Id, occurredBeforeUtc, assigned); if (batch is null) return;
+        _preparedBatches.Enqueue(batch);
+        await ActivateNextPreparedBatchAsync(parent);
+    }
+
+    private async Task ActivateNextPreparedBatchAsync(SessionMetadata parent)
+    {
+        if (_currentBatch is not null || _preparedBatches.Count == 0) return;
+        _currentBatch = _preparedBatches.Dequeue();
+        _alerts.RequestAlert(_currentBatch.ReservationId, _currentBatch.ParentSessionId, _currentBatch.Message);
         await TryDeliverAlertAsync(parent);
     }
 
-    private void SchedulePendingAlerts(SessionMetadata parent)
+    private void SchedulePendingAlerts(SessionMetadata parent, DateTimeOffset firstCompletionUtc)
     {
-        _batchDelay?.Cancel(); _batchDelay?.Dispose(); _batchDelay = new CancellationTokenSource(); var token = _batchDelay.Token;
-        _ = WaitForCompletionBatchAsync(parent, token);
+        _completionBatches.Schedule(parent.Id, firstCompletionUtc);
     }
 
-    private async Task WaitForCompletionBatchAsync(SessionMetadata parent, CancellationToken cancellationToken)
+    private Task CompletionBatchDueAsync(Guid parentSessionId, DateTimeOffset _, DateTimeOffset deadlineUtc)
     {
-        try
+        DispatcherQueue.TryEnqueue(async () =>
         {
-            await Task.Delay(CompletionBatchWindow, cancellationToken);
-            await QueuePendingAlertsAsync(parent);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-        catch (Exception exception)
-        {
-            DispatcherQueue.TryEnqueue(() => _views[parent.Id].Append($"\n[Unable to prepare completion batch: {exception.Message}]\n"));
-        }
+            if (_catalog.Sessions.FirstOrDefault(item => item.Id == parentSessionId) is not { } parent) return;
+            try { await QueuePendingAlertsAsync(parent, deadlineUtc); }
+            catch (Exception exception) { _views[parent.Id].Append($"\n[Unable to prepare completion batch: {exception.Message}]\n"); }
+        });
+        return Task.CompletedTask;
     }
 
     private async void SidebarButton_Click(object sender, RoutedEventArgs e)
@@ -454,7 +470,7 @@ public sealed partial class MainWindow : Window
 
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
-        _batchDelay?.Cancel(); _batchDelay?.Dispose();
+        _completionBatches.Dispose();
         _windowsNotifications.Dispose();
         try
         {

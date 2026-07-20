@@ -321,29 +321,73 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
         return (IReadOnlyList<AlertDelivery>)items;
     }, cancellationToken);
 
+    public Task<IReadOnlyList<AlertDelivery>> LoadPendingAlertsBeforeAsync(Guid parentSessionId, DateTimeOffset occurredBeforeUtc, CancellationToken cancellationToken = default) => LockedAsync(async () =>
+    {
+        await using var command = Command("SELECT d.EventId,e.ParentSessionId,s.DisplayName,d.Message,d.State,d.ReservedAtUtc,d.DeliveredAtUtc,d.UpdatedAtUtc FROM AlertDeliveries d JOIN LifecycleEvents e ON e.Id=d.EventId JOIN Sessions s ON s.Id=e.SessionId WHERE e.ParentSessionId=$parent AND d.State=$pending AND e.OccurredAtUtc<$before ORDER BY e.OccurredAtUtc,e.Id;");
+        command.Parameters.AddWithValue("$parent", parentSessionId.ToString());
+        command.Parameters.AddWithValue("$pending", (int)AlertDeliveryState.Pending);
+        command.Parameters.AddWithValue("$before", Format(occurredBeforeUtc));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken); var items = new List<AlertDelivery>();
+        while (await reader.ReadAsync(cancellationToken)) items.Add(ReadAlertDelivery(reader));
+        return (IReadOnlyList<AlertDelivery>)items;
+    }, cancellationToken);
+
     public Task<bool> ReserveAlertAsync(Guid eventId, DateTimeOffset reservedAtUtc, CancellationToken cancellationToken = default) =>
         ChangeStateAsync(eventId, AlertDeliveryState.Pending, AlertDeliveryState.Reserved, reservedAtUtc, "ReservedAtUtc=$time", cancellationToken);
 
     public Task<bool> ReserveAlertsAsync(IReadOnlyCollection<Guid> eventIds, DateTimeOffset reservedAtUtc, CancellationToken cancellationToken = default) =>
         ChangeStatesAsync(eventIds, AlertDeliveryState.Pending, AlertDeliveryState.Reserved, reservedAtUtc, "ReservedAtUtc=$time", cancellationToken);
 
+    public Task<bool> MarkAlertWriteSucceededAsync(IReadOnlyCollection<Guid> eventIds, DateTimeOffset deliveredAtUtc, CancellationToken cancellationToken = default) => LockedAsync(async () =>
+    {
+        if (eventIds.Count == 0) return false;
+        await using var transaction = await _connection.BeginTransactionAsync(cancellationToken);
+        foreach (var eventId in eventIds.Distinct())
+        {
+            await using var command = Command("UPDATE AlertDeliveries SET DeliveredAtUtc=$time,UpdatedAtUtc=$time WHERE EventId=$id AND State=$reserved AND DeliveredAtUtc IS NULL;");
+            command.Transaction = (SqliteTransaction)transaction;
+            command.Parameters.AddWithValue("$id", eventId.ToString());
+            command.Parameters.AddWithValue("$reserved", (int)AlertDeliveryState.Reserved);
+            command.Parameters.AddWithValue("$time", Format(deliveredAtUtc));
+            if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) { await transaction.RollbackAsync(cancellationToken); return false; }
+        }
+        await transaction.CommitAsync(cancellationToken); return true;
+    }, cancellationToken);
+
     public Task<bool> CommitAlertAsync(Guid eventId, DateTimeOffset deliveredAtUtc, CancellationToken cancellationToken = default) =>
-        ChangeStateAsync(eventId, AlertDeliveryState.Reserved, AlertDeliveryState.Delivered, deliveredAtUtc, "DeliveredAtUtc=$time", cancellationToken);
+        ChangeStateAsync(eventId, AlertDeliveryState.Reserved, AlertDeliveryState.Delivered, deliveredAtUtc, "DeliveredAtUtc=COALESCE(DeliveredAtUtc,$time)", cancellationToken);
 
     public Task<bool> CommitAlertsAsync(IReadOnlyCollection<Guid> eventIds, DateTimeOffset deliveredAtUtc, CancellationToken cancellationToken = default) =>
-        ChangeStatesAsync(eventIds, AlertDeliveryState.Reserved, AlertDeliveryState.Delivered, deliveredAtUtc, "DeliveredAtUtc=$time", cancellationToken);
+        ChangeStatesAsync(eventIds, AlertDeliveryState.Reserved, AlertDeliveryState.Delivered, deliveredAtUtc, "DeliveredAtUtc=COALESCE(DeliveredAtUtc,$time)", cancellationToken);
 
     public Task<bool> ReleaseAlertAsync(Guid eventId, DateTimeOffset updatedAtUtc, CancellationToken cancellationToken = default) =>
-        ChangeStateAsync(eventId, AlertDeliveryState.Reserved, AlertDeliveryState.Pending, updatedAtUtc, "ReservedAtUtc=NULL", cancellationToken);
+        ChangeStateAsync(eventId, AlertDeliveryState.Reserved, AlertDeliveryState.Pending, updatedAtUtc, "ReservedAtUtc=NULL", cancellationToken, " AND DeliveredAtUtc IS NULL");
 
     public Task<bool> ReleaseAlertsAsync(IReadOnlyCollection<Guid> eventIds, DateTimeOffset updatedAtUtc, CancellationToken cancellationToken = default) =>
-        ChangeStatesAsync(eventIds, AlertDeliveryState.Reserved, AlertDeliveryState.Pending, updatedAtUtc, "ReservedAtUtc=NULL", cancellationToken);
+        ChangeStatesAsync(eventIds, AlertDeliveryState.Reserved, AlertDeliveryState.Pending, updatedAtUtc, "ReservedAtUtc=NULL", cancellationToken, " AND DeliveredAtUtc IS NULL");
 
     public Task<int> RecoverStaleReservationsAsync(DateTimeOffset updatedAtUtc, CancellationToken cancellationToken = default) => LockedAsync(async () =>
     {
-        await using var command = Command("UPDATE AlertDeliveries SET State=$pending,ReservedAtUtc=NULL,UpdatedAtUtc=$updated WHERE State=$reserved;");
-        command.Parameters.AddWithValue("$pending", (int)AlertDeliveryState.Pending); command.Parameters.AddWithValue("$reserved", (int)AlertDeliveryState.Reserved);
-        command.Parameters.AddWithValue("$updated", Format(updatedAtUtc)); return await command.ExecuteNonQueryAsync(cancellationToken);
+        await using var transaction = await _connection.BeginTransactionAsync(cancellationToken);
+        await using (var delivered = Command("UPDATE AlertDeliveries SET State=$delivered,UpdatedAtUtc=$updated WHERE State=$reserved AND DeliveredAtUtc IS NOT NULL;"))
+        {
+            delivered.Transaction = (SqliteTransaction)transaction;
+            delivered.Parameters.AddWithValue("$delivered", (int)AlertDeliveryState.Delivered);
+            delivered.Parameters.AddWithValue("$reserved", (int)AlertDeliveryState.Reserved);
+            delivered.Parameters.AddWithValue("$updated", Format(updatedAtUtc));
+            await delivered.ExecuteNonQueryAsync(cancellationToken);
+        }
+        int recovered;
+        await using (var pending = Command("UPDATE AlertDeliveries SET State=$pending,ReservedAtUtc=NULL,UpdatedAtUtc=$updated WHERE State=$reserved AND DeliveredAtUtc IS NULL;"))
+        {
+            pending.Transaction = (SqliteTransaction)transaction;
+            pending.Parameters.AddWithValue("$pending", (int)AlertDeliveryState.Pending);
+            pending.Parameters.AddWithValue("$reserved", (int)AlertDeliveryState.Reserved);
+            pending.Parameters.AddWithValue("$updated", Format(updatedAtUtc));
+            recovered = await pending.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return recovered;
     }, cancellationToken);
 
     public Task<AlertDelivery?> FindAlertDeliveryAsync(Guid eventId, CancellationToken cancellationToken = default) =>
@@ -379,20 +423,20 @@ public sealed class SqliteWorkspaceStore : IWorkspaceStore
     private static void Add(SqliteCommand c, LifecycleEvent e) { c.Parameters.AddWithValue("$id",e.Id.ToString());c.Parameters.AddWithValue("$session",e.SessionId.ToString());c.Parameters.AddWithValue("$parent",Db(e.ParentSessionId));c.Parameters.AddWithValue("$previous",(int)e.PreviousStatus);c.Parameters.AddWithValue("$new",(int)e.NewStatus);c.Parameters.AddWithValue("$occurred",Format(e.OccurredAt));c.Parameters.AddWithValue("$eligible",e.AlertEligible ? 1 : 0); }
     private static void Add(SqliteCommand c, AgentRelationship r) { c.Parameters.AddWithValue("$child",r.ChildSessionId.ToString());c.Parameters.AddWithValue("$workspace",r.WorkspaceId.ToString());c.Parameters.AddWithValue("$parent",r.ParentSessionId.ToString());c.Parameters.AddWithValue("$registered",Format(r.RegisteredAtUtc)); }
 
-    private Task<bool> ChangeStateAsync(Guid eventId, AlertDeliveryState expected, AlertDeliveryState next, DateTimeOffset at, string timestampAssignment, CancellationToken token) => LockedAsync(async () =>
+    private Task<bool> ChangeStateAsync(Guid eventId, AlertDeliveryState expected, AlertDeliveryState next, DateTimeOffset at, string timestampAssignment, CancellationToken token, string additionalWhere = "") => LockedAsync(async () =>
     {
-        await using var command = Command($"UPDATE AlertDeliveries SET State=$next,{timestampAssignment},UpdatedAtUtc=$time WHERE EventId=$id AND State=$expected;");
+        await using var command = Command($"UPDATE AlertDeliveries SET State=$next,{timestampAssignment},UpdatedAtUtc=$time WHERE EventId=$id AND State=$expected{additionalWhere};");
         command.Parameters.AddWithValue("$id", eventId.ToString()); command.Parameters.AddWithValue("$expected", (int)expected); command.Parameters.AddWithValue("$next", (int)next); command.Parameters.AddWithValue("$time", Format(at));
         return await command.ExecuteNonQueryAsync(token) == 1;
     }, token);
 
-    private Task<bool> ChangeStatesAsync(IReadOnlyCollection<Guid> eventIds, AlertDeliveryState expected, AlertDeliveryState next, DateTimeOffset at, string timestampAssignment, CancellationToken token) => LockedAsync(async () =>
+    private Task<bool> ChangeStatesAsync(IReadOnlyCollection<Guid> eventIds, AlertDeliveryState expected, AlertDeliveryState next, DateTimeOffset at, string timestampAssignment, CancellationToken token, string additionalWhere = "") => LockedAsync(async () =>
     {
         if (eventIds.Count == 0) return false;
         await using var transaction = await _connection.BeginTransactionAsync(token);
         foreach (var eventId in eventIds.Distinct())
         {
-            await using var command = Command($"UPDATE AlertDeliveries SET State=$next,{timestampAssignment},UpdatedAtUtc=$time WHERE EventId=$id AND State=$expected;");
+            await using var command = Command($"UPDATE AlertDeliveries SET State=$next,{timestampAssignment},UpdatedAtUtc=$time WHERE EventId=$id AND State=$expected{additionalWhere};");
             command.Transaction = (SqliteTransaction)transaction; command.Parameters.AddWithValue("$id", eventId.ToString());
             command.Parameters.AddWithValue("$expected", (int)expected); command.Parameters.AddWithValue("$next", (int)next); command.Parameters.AddWithValue("$time", Format(at));
             if (await command.ExecuteNonQueryAsync(token) != 1) { await transaction.RollbackAsync(token); return false; }

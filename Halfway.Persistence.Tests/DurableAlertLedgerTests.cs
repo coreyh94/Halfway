@@ -82,6 +82,67 @@ public sealed class DurableAlertLedgerTests : IAsyncDisposable
         Assert.All(await ledger.LoadPendingAsync(catalog.SelectedPrimary.Id), item => Assert.Equal(AlertDeliveryState.Pending, item.State));
     }
 
+    [Fact]
+    public async Task FixedDeadlineExcludesBoundaryAndPreservesExactTargetOrderingAndBytes()
+    {
+        await using var store = new SqliteWorkspaceStore(Path.Combine(_directory, "fixed-window.db"));
+        var catalog = new WorkspaceCatalog(store);
+        await catalog.InitializeAsync(_directory, LaunchProfile.PowerShell);
+        var ui = await catalog.CreateSubAgentAsync("UI", LaunchProfile.PowerShell);
+        var tests = await catalog.CreateSubAgentAsync("Tests", LaunchProfile.PowerShell);
+        var docs = await catalog.CreateSubAgentAsync("Docs", LaunchProfile.PowerShell);
+        var runtime = catalog.SubAgentSessions.Single(item => item.DisplayName == "Runtime");
+        var ledger = new DurableAlertLedger(store);
+        var start = new DateTimeOffset(2026, 7, 20, 0, 0, 0, TimeSpan.Zero);
+        var deadline = start.AddMilliseconds(250);
+
+        await ledger.RecordAsync(Completion(runtime, start));
+        await ledger.RecordAsync(Completion(ui, deadline.AddTicks(-1)));
+        await ledger.RecordAsync(Completion(tests, deadline));
+        await ledger.RecordAsync(Completion(docs, deadline.AddTicks(1)));
+
+        var first = Assert.IsType<DurableAlertBatch>(await ledger.CreatePendingBatchAsync(catalog.SelectedPrimary!.Id, deadline));
+        Assert.Equal(catalog.SelectedPrimary.Id, first.ParentSessionId);
+        Assert.Equal(2, first.EventIds.Count);
+        Assert.Equal("[Halfway Alert!] Runtime and UI completed. Continue orchestration.", first.Message);
+        Assert.Equal(System.Text.Encoding.UTF8.GetBytes("[Halfway Alert!] Runtime and UI completed. Continue orchestration."), System.Text.Encoding.UTF8.GetBytes(first.Message));
+        Assert.True(await ledger.ReserveAsync(first.EventIds));
+        Assert.True(await ledger.MarkWriteSucceededAsync(first.EventIds));
+        Assert.True(await ledger.CommitAsync(first.EventIds));
+
+        var second = Assert.IsType<DurableAlertBatch>(await ledger.CreatePendingBatchAsync(catalog.SelectedPrimary.Id, deadline.AddMilliseconds(250)));
+        Assert.Equal(catalog.SelectedPrimary.Id, second.ParentSessionId);
+        Assert.Equal("[Halfway Alert!] Tests and Docs completed. Continue orchestration.", second.Message);
+    }
+
+    [Fact]
+    public async Task RestartFinalizesKnownSuccessfulWriteInsteadOfRequeueingIt()
+    {
+        var database = Path.Combine(_directory, "known-write.db");
+        Guid parentId;
+        Guid eventId;
+        await using (var store = new SqliteWorkspaceStore(database))
+        {
+            var catalog = new WorkspaceCatalog(store);
+            await catalog.InitializeAsync(_directory, LaunchProfile.PowerShell);
+            parentId = catalog.SelectedPrimary!.Id;
+            var ledger = new DurableAlertLedger(store);
+            var transition = Completion(catalog.SelectedSubAgent!);
+            eventId = transition.Event!.Id;
+            await ledger.RecordAsync(transition);
+            Assert.True(await ledger.ReserveAsync(eventId));
+            Assert.True(await ledger.MarkWriteSucceededAsync([eventId]));
+            Assert.False(await ledger.ReleaseAsync(eventId));
+        }
+
+        await using var reopened = new SqliteWorkspaceStore(database);
+        await reopened.InitializeAsync();
+        var recovered = new DurableAlertLedger(reopened);
+        Assert.Equal(0, await recovered.RecoverAsync());
+        Assert.Empty(await recovered.LoadPendingAsync(parentId));
+        Assert.Equal(AlertDeliveryState.Delivered, (await reopened.FindAlertDeliveryAsync(eventId))!.State);
+    }
+
     private static LifecycleTransition Completion(SessionMetadata child, DateTimeOffset? occurredAt = null)
     {
         var item = new LifecycleEvent(Guid.NewGuid(), child.Id, child.ParentSessionId, AgentStatus.Running, AgentStatus.Completed, occurredAt ?? DateTimeOffset.UtcNow, true);

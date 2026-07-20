@@ -314,6 +314,78 @@ public sealed class SessionCoordinatorTests
         Assert.Throws<KeyNotFoundException>(() => coordinator.Get("runtime"));
     }
 
+    [Fact]
+    public async Task OutputClassifiedByReleasedTerminalCannotReviveCompletedSession()
+    {
+        var factory = new FakeFactory();
+        var registry = new SessionRegistry();
+        var plannerId = Guid.NewGuid();
+        var runtimeId = Guid.NewGuid();
+        registry.Register(new AgentSession(plannerId, "Planner", AgentKind.Primary, null));
+        var classified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hooks = new SessionCoordinatorHooks
+        {
+            OutputClassified = () =>
+            {
+                classified.TrySetResult();
+                resume.Task.GetAwaiter().GetResult();
+            },
+        };
+        var coordinator = new SessionCoordinator(factory, registry, hooks);
+        var completed = StateSignal(coordinator, AgentStatus.Completed);
+        var publishedOutput = new List<SessionOutput>();
+        coordinator.OutputReceived += (_, output) => publishedOutput.Add(output);
+        await coordinator.StartAsync(
+            Descriptor("runtime", runtimeId, "Runtime", plannerId),
+            Options(),
+            new ShellReadinessAdapter());
+
+        var delayedOutput = Task.Run(() => factory.Sessions[0].EmitOutput("PS> "));
+        await classified.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        factory.Sessions[0].EmitExit(0, false);
+        await completed;
+        resume.TrySetResult();
+        await delayedOutput;
+
+        Assert.Equal(AgentStatus.Completed, registry.Get(runtimeId).Status);
+        Assert.DoesNotContain(registry.Events, item => item.PreviousStatus == AgentStatus.Completed && item.NewStatus == AgentStatus.Waiting);
+        Assert.Empty(publishedOutput);
+    }
+
+    [Fact]
+    public async Task DirectWritePausedBeforeOwnershipCheckCannotTargetReleasedOrReplacementTerminal()
+    {
+        var factory = new FakeFactory();
+        var registry = new SessionRegistry();
+        var plannerId = Guid.NewGuid();
+        var runtimeId = Guid.NewGuid();
+        registry.Register(new AgentSession(plannerId, "Planner", AgentKind.Primary, null));
+        var paused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hooks = new SessionCoordinatorHooks
+        {
+            BeforeDirectWrite = () =>
+            {
+                paused.TrySetResult();
+                resume.Task.GetAwaiter().GetResult();
+            },
+        };
+        var coordinator = new SessionCoordinator(factory, registry, hooks);
+        var descriptor = Descriptor("runtime", runtimeId, "Runtime", plannerId);
+        await coordinator.StartAsync(descriptor, Options());
+
+        var staleWrite = Task.Run(() => coordinator.WriteAsync("runtime", "stale\r"));
+        await paused.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await coordinator.StopAsync("runtime");
+        await coordinator.StartAsync(descriptor, Options());
+        resume.TrySetResult();
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => staleWrite);
+        Assert.Empty(factory.Sessions[0].Inputs);
+        Assert.Empty(factory.Sessions[1].Inputs);
+    }
+
     private static SessionCoordinator CreateCoordinator(FakeFactory factory, out Guid plannerId, out Guid runtimeId)
     {
         var registry = new SessionRegistry();
