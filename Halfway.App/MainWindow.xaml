@@ -8,6 +8,9 @@
    <KeyboardAccelerator Key="Up" Modifiers="Menu" Invoked="PreviousSidebarSession_Invoked"/>
    <KeyboardAccelerator Key="Down" Modifiers="Menu" Invoked="NextSidebarSession_Invoked"/>
    <KeyboardAccelerator Key="N" Modifiers="Control,Shift" Invoked="AddSubAgent_Invoked"/>
+   <KeyboardAccelerator Key="F" Modifiers="Control" Invoked="OpenTerminalSearch_Invoked"/>
+   <KeyboardAccelerator Key="F3" Invoked="NextSearchMatch_Invoked"/>
+   <KeyboardAccelerator Key="F3" Modifiers="Shift" Invoked="PreviousSearchMatch_Invoked"/>
   </Grid.KeyboardAccelerators>
   <Grid.RowDefinitions><RowDefinition Height="56"/><RowDefinition Height="*"/></Grid.RowDefinitions>
   <Border Background="#17191E" BorderBrush="#2C3039" BorderThickness="0,0,0,1"><Grid Padding="20,0"><Grid.ColumnDefinitions><ColumnDefinition Width="220"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>

@@ -44,7 +44,7 @@ Phase 2 persists eligible lifecycle events, atomically reserves delivery, recove
 ## Phase 3 — Usability
 
 - [x] Keyboard navigation.
-- Terminal search.
+- [x] Terminal search.
 - Workspace restore.
 - Unread indicators.
 - Resizable panels.

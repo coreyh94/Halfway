@@ -63,6 +63,8 @@ MainWindow            -> fixed-layout presentation and user interaction
 
 `MainWindow` handles the fixed set of window-level navigation shortcuts through shared primary/sub-agent selection methods. A pure `WorkspaceNavigation` helper owns display ordering, target choice, and wrapping. Every mouse, tab, and keyboard selection persists through `WorkspaceCatalog`, synchronizes sidebar and tab presentation, then restores terminal input focus. Selection never calls `SessionCoordinator`, creates a lifecycle transition, or queues terminal input. `TerminalSessionView` retains each view's partial input while selection changes; inactive terminal inputs are focusable but read-only.
 
+Terminal search remains a presentation-only feature. A pure `TerminalSearch` helper finds case-insensitive matches and wraps result navigation; `TerminalSessionView` owns the per-view query, highlighting, and scroll position within its bounded in-memory output. Search never reads the input control, writes to ConPTY, changes readiness, creates lifecycle events, queues alerts, or persists queries, matches, or output.
+
 `Halfway.Persistence` contains the SQLite store and catalog. `Halfway.Core` contains shared workspace/session metadata, launch-profile values, agent kinds, lifecycle states, and status presentation. Persisted models never own or expose `ITerminalSession`; live terminal ownership remains exclusively in `Halfway.Runtime`.
 
 ### Persistence and restore

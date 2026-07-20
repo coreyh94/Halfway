@@ -94,6 +94,7 @@ public sealed partial class MainWindow : Window
 
     private void WireView(TerminalSessionView view)
     {
+        view.GotFocus += (_, _) => _focusedSessionId = view.Metadata.Id;
         view.StartRequested += async (_, _) => await StartSessionAsync(view.Metadata);
         view.StopRequested += async (_, _) => await StopSessionAsync(view.Metadata);
         view.PowerShellRequested += async (_, _) => await ReplacePrimaryAsync(view.Metadata, LaunchProfile.PowerShell);
@@ -316,6 +317,15 @@ public sealed partial class MainWindow : Window
     private async void PreviousSidebarSession_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { args.Handled = true; await MoveSidebarAsync(-1); }
     private async void NextSidebarSession_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { args.Handled = true; await MoveSidebarAsync(1); }
     private async void AddSubAgent_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { args.Handled = true; await ShowAddSubAgentDialogAsync(); }
+    private void OpenTerminalSearch_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { args.Handled = true; FocusedTerminalView()?.OpenSearch(); }
+    private void NextSearchMatch_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { var view = FocusedTerminalView(); if (view?.IsSearchOpen != true) return; args.Handled = true; view.MoveToNextMatch(); }
+    private void PreviousSearchMatch_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args) { var view = FocusedTerminalView(); if (view?.IsSearchOpen != true) return; args.Handled = true; view.MoveToPreviousMatch(); }
+
+    private TerminalSessionView? FocusedTerminalView()
+    {
+        var id = _focusedSessionId ?? _catalog.Workspace.SelectedSubAgentSessionId ?? _catalog.Workspace.SelectedPrimarySessionId;
+        return id is Guid sessionId && _views.TryGetValue(sessionId, out var view) ? view : null;
+    }
 
     private void ApplySelection()
     {

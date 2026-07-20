@@ -4,7 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Border x:Name="Panel" Background="#0A0B0D" BorderBrush="#272C35" BorderThickness="1" CornerRadius="5" Padding="12" SizeChanged="Panel_SizeChanged">
         <Grid>
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
                 <TextBlock x:Name="TitleText" Foreground="#AAB2BF" VerticalAlignment="Center"/>
                 <TextBlock x:Name="StatusText" Text="DISCONNECTED" Foreground="#F1C77A" VerticalAlignment="Center"/>
@@ -14,10 +14,18 @@
                 <Button x:Name="CodexButton" Content="Codex" Click="CodexButton_Click" Visibility="Collapsed"/>
                 <Button x:Name="DemoAlertButton" Content="Inject demo alert" Click="DemoAlertButton_Click" Visibility="Collapsed"/>
             </StackPanel>
-            <ScrollViewer x:Name="OutputScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+            <Grid x:Name="SearchPanel" Grid.Row="1" Visibility="Collapsed" Margin="0,0,0,8" ColumnSpacing="6">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBox x:Name="SearchText" PlaceholderText="Find in terminal" TextChanged="SearchText_TextChanged" KeyDown="SearchText_KeyDown"/>
+                <TextBlock x:Name="SearchResultText" Grid.Column="1" VerticalAlignment="Center" Foreground="#AAB2BF"/>
+                <Button Grid.Column="2" Content="Previous" Click="PreviousSearchButton_Click"/>
+                <Button Grid.Column="3" Content="Next" Click="NextSearchButton_Click"/>
+                <Button Grid.Column="4" Content="Close" Click="CloseSearchButton_Click"/>
+            </Grid>
+            <ScrollViewer x:Name="OutputScroll" Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
                 <TextBlock x:Name="OutputText" TextWrapping="NoWrap" FontFamily="Cascadia Mono, Consolas" FontSize="13" Foreground="#D5DAE2" IsTextSelectionEnabled="True"/>
             </ScrollViewer>
-            <TextBox x:Name="InputText" Grid.Row="2" Margin="0,8,0,0" FontFamily="Cascadia Mono, Consolas" PlaceholderText="Type a command and press Enter" KeyDown="InputText_KeyDown" TextChanged="InputText_TextChanged"/>
+            <TextBox x:Name="InputText" Grid.Row="3" Margin="0,8,0,0" FontFamily="Cascadia Mono, Consolas" PlaceholderText="Type a command and press Enter" KeyDown="InputText_KeyDown" TextChanged="InputText_TextChanged"/>
         </Grid>
     </Border>
 </UserControl>
