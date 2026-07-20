@@ -6,6 +6,7 @@ using Halfway.Terminal.Readiness;
 using Halfway.Terminal.Windows;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 
@@ -390,6 +391,21 @@ public sealed partial class MainWindow : Window
         RunningCountText.Text = $"RUNNING {counts.GetValueOrDefault(AgentStatus.Running)}"; WaitingCountText.Text = $"WAITING {counts.GetValueOrDefault(AgentStatus.Waiting)}"; CompletedCountText.Text = $"COMPLETE {counts.GetValueOrDefault(AgentStatus.Completed)}";
         ConnectionText.Text = counts.GetValueOrDefault(AgentStatus.Running) > 0 ? "● CONNECTED" : "! DISCONNECTED";
     }
+
+    private void SidebarSplitter_DragDelta(object sender, DragDeltaEventArgs e)
+    {
+        var resized = PanelSizing.Resize(SidebarColumn.ActualWidth, PrimaryColumn.ActualWidth, e.HorizontalChange, 160, 420, 320);
+        SidebarColumn.Width = new GridLength(resized.Leading);
+    }
+
+    private void SubAgentSplitter_DragDelta(object sender, DragDeltaEventArgs e)
+    {
+        var resized = PanelSizing.Resize(PrimaryColumn.ActualWidth, SubAgentColumn.ActualWidth, e.HorizontalChange, 320, double.MaxValue, 280);
+        SubAgentColumn.Width = new GridLength(resized.Trailing);
+    }
+
+    private void SidebarSplitter_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) => SidebarColumn.Width = new GridLength(236);
+    private void SubAgentSplitter_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) => SubAgentColumn.Width = new GridLength(420);
 
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {

@@ -67,6 +67,8 @@ Terminal search remains a presentation-only feature. A pure `TerminalSearch` hel
 
 `SessionAttentionTracker` owns transient unread state. A real `SessionCoordinator.OutputReceived` callback marks a session unread only when another terminal is focused, and focusing that terminal clears its marker in both sidebar and tab presentation. Repeated output is idempotent, focused output stays read, and restore creates no unread state. Attention state never enters SQLite and does not participate in lifecycle detection or alert delivery.
 
+The fixed workspace grid exposes two native drag boundaries for sidebar/main and main/sub-agent sizing. Pure `PanelSizing` calculations clamp each pair to usable minimums while preserving available width; the main panel remains responsive as the window changes size. `TerminalSessionView.SizeChanged` continues through `SessionCoordinator.Resize` to the owned ConPTY session. Divider movement does not select sessions, submit input, change lifecycle state, or persist layout dimensions.
+
 `Halfway.Persistence` contains the SQLite store and catalog. `Halfway.Core` contains shared workspace/session metadata, launch-profile values, agent kinds, lifecycle states, and status presentation. Persisted models never own or expose `ITerminalSession`; live terminal ownership remains exclusively in `Halfway.Runtime`.
 
 ### Persistence and restore
