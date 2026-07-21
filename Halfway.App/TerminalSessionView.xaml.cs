@@ -13,6 +13,9 @@ namespace Halfway.App;
 public sealed partial class TerminalSessionView : UserControl
 {
     private const int MaximumOutputCharacters = 64 * 1024;
+    private static readonly Regex AnsiEscapePattern = new("\\x1B(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])", RegexOptions.Compiled);
+    private static readonly Regex ScreenClearPattern = new("\\x1B(?:c|\\[[23]J|\\[\\?1049[hl])", RegexOptions.Compiled);
+    private static readonly Regex BlankLineRunPattern = new("\\n{3,}", RegexOptions.Compiled);
     private IReadOnlyList<int> _searchMatches = [];
     private int _currentSearchMatch = -1;
     private bool _relayingInput;
@@ -31,7 +34,30 @@ public sealed partial class TerminalSessionView : UserControl
     public event EventHandler<TerminalSize>? ResizeRequested;
     public void SetStatus(AgentStatus status) { var brush=ThemeBrush(StatusPresentation.ColorKey(status));StatusText.Text=status.ToString().ToUpperInvariant();StatusText.Foreground=brush;StatusDot.Fill=brush;var active=status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting; StartButton.IsEnabled=!active; StartButton.Content=status == AgentStatus.Disconnected ? "Restart" : "Start"; StopButton.IsEnabled=active; InputText.IsReadOnly=status is not (AgentStatus.Running or AgentStatus.Waiting); }
     public void UpdateMetadata(SessionMetadata metadata) { if(metadata.Id!=Metadata.Id)throw new ArgumentException("Session identity cannot change.",nameof(metadata));Metadata=metadata;TitleText.Text=metadata.DisplayName;SetStatus(metadata.LastStatus); }
-    public void Append(string output) { var plain=Regex.Replace(output,"\\x1B(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])",string.Empty);if(plain.Length==0)return;var combined=OutputText.Text+"- "+plain;OutputText.Text=combined.Length<=MaximumOutputCharacters?combined:combined[^MaximumOutputCharacters..];if(IsSearchOpen)RefreshSearch();else{OutputScroll.UpdateLayout();OutputScroll.ChangeView(null,OutputScroll.ScrollableHeight,null,true);} }
+    public void Append(string output)
+    {
+        // A full-screen clear or alternate-screen switch means the shell is repainting, so reset the
+        // view to that point instead of stacking every frame. (This is a bounded view, not an emulator.)
+        var clears = ScreenClearPattern.Matches(output);
+        if (clears.Count > 0)
+        {
+            OutputText.Text = string.Empty;
+            var last = clears[^1];
+            output = output[(last.Index + last.Length)..];
+        }
+        var plain = AnsiEscapePattern.Replace(output, string.Empty);
+        if (plain.Length == 0)
+        {
+            if (clears.Count > 0 && !IsSearchOpen) { OutputScroll.UpdateLayout(); OutputScroll.ChangeView(null, OutputScroll.ScrollableHeight, null, true); }
+            else if (clears.Count > 0) RefreshSearch();
+            return;
+        }
+        var marked = string.IsNullOrWhiteSpace(plain) ? plain : "- " + plain;
+        var combined = BlankLineRunPattern.Replace(OutputText.Text + marked, "\n\n");
+        OutputText.Text = combined.Length <= MaximumOutputCharacters ? combined : combined[^MaximumOutputCharacters..];
+        if (IsSearchOpen) RefreshSearch();
+        else { OutputScroll.UpdateLayout(); OutputScroll.ChangeView(null, OutputScroll.ScrollableHeight, null, true); }
+    }
     public void ClearOutput() { OutputText.Text=string.Empty; RefreshSearch(); }
     public void FocusInput()=>InputText.Focus(FocusState.Programmatic);
     public void RestoreFocus() { if(IsSearchOpen) SearchText.Focus(FocusState.Programmatic); else FocusInput(); }
