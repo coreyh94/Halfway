@@ -96,8 +96,8 @@ Runtime launches PowerShell by default. Set `HALFWAY_RUNTIME_LAUNCH=codex` to la
 
 ## Current limitations
 
-- Terminal output is decoded as a stateful UTF-8 stream and shown in a bounded 64 KiB raw-text view with common ANSI control sequences removed; it is not a full terminal emulator.
-- Input is line-oriented. Advanced terminal keys, mouse input, complete scrollback, copy/paste semantics, and accurate screen-buffer rendering require an established terminal control in a later slice. Search is limited to the bounded in-memory raw-text view.
+- Terminal output is rendered by an embedded VT screen-buffer emulator: cursor addressing, SGR colour (16/256/truecolor), erase, scroll regions and the alternate screen are interpreted, so full-screen TUIs such as Codex render in place. It is intentionally compact rather than a fully conformant DEC terminal; mouse reporting and some advanced private modes are not implemented.
+- Keystrokes are forwarded live to the shell, so command history, tab completion and control keys (for example Ctrl+C) work. Mouse input and OS-level copy/paste shortcuts inside the grid are still limited. Search runs over the current screen plus bounded scrollback.
 - Codex readiness uses the isolated, deliberately conservative `codex` v1 adapter and may require a new explicit adapter version as Codex output changes.
 - Sessions are metadata-persisted but processes are never reattached and terminal content is never restored.
 - Exactly one known workspace is presented and owns live processes at a time; no creation/import, delete/archive, background workspace, reattachment, or automatic restart workflow is included.

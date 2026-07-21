@@ -1,24 +1,46 @@
 using System.Text;
-using System.Text.RegularExpressions;
 using Halfway.Core;
+using Halfway.Core.Vt;
 using Halfway.Terminal;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Shapes;
 using Windows.System;
+using Windows.UI;
 
 namespace Halfway.App;
 
 public sealed partial class TerminalSessionView : UserControl
 {
-    private const int MaximumOutputCharacters = 64 * 1024;
-    private static readonly Regex BlankLineRunPattern = new("\\n{3,}", RegexOptions.Compiled);
+    private const double TerminalFontSize = 14;
+    private const int MaxRenderedLines = 500;
+    private static readonly FontFamily MonoFont = new("Cascadia Mono, Consolas");
+
+    private readonly TerminalEmulator _emulator = new(80, 24);
+    private double _cellWidth = 8.4;
+    private double _cellHeight = 18;
+    private bool _metricsMeasured;
+    private bool _renderScheduled;
+    private string _snapshotText = string.Empty;
+    private int _snapshotColumns = 80;
+
     private IReadOnlyList<int> _searchMatches = [];
     private int _currentSearchMatch = -1;
     private bool _relayingInput;
-    public TerminalSessionView(SessionMetadata metadata) { InitializeComponent(); Metadata = metadata; TitleText.Text = metadata.DisplayName; if(metadata.Kind==AgentKind.Primary){PowerShellButton.Visibility=Visibility.Visible;CodexButton.Visibility=Visibility.Visible;DemoAlertButton.Visibility=Visibility.Visible;} SetStatus(metadata.LastStatus); }
+
+    public TerminalSessionView(SessionMetadata metadata)
+    {
+        InitializeComponent();
+        Metadata = metadata;
+        TitleText.Text = metadata.DisplayName;
+        if (metadata.Kind == AgentKind.Primary) { PowerShellButton.Visibility = Visibility.Visible; CodexButton.Visibility = Visibility.Visible; DemoAlertButton.Visibility = Visibility.Visible; }
+        SetStatus(metadata.LastStatus);
+        RenderTerminal();
+    }
+
     public SessionMetadata Metadata { get; private set; }
     public string PartialInput => InputText.Text;
     public bool IsSearchOpen => SearchPanel.Visibility == Visibility.Visible;
@@ -31,147 +53,244 @@ public sealed partial class TerminalSessionView : UserControl
     public event EventHandler? CodexRequested;
     public event EventHandler? DemoAlertRequested;
     public event EventHandler<TerminalSize>? ResizeRequested;
+
     public void SetStatus(AgentStatus status) { var brush=ThemeBrush(StatusPresentation.ColorKey(status));StatusText.Text=status.ToString().ToUpperInvariant();StatusText.Foreground=brush;StatusDot.Fill=brush;var active=status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting; StartButton.IsEnabled=!active; StartButton.Content=status == AgentStatus.Disconnected ? "Restart" : "Start"; StopButton.IsEnabled=active; InputText.IsReadOnly=status is not (AgentStatus.Running or AgentStatus.Waiting); }
     public void UpdateMetadata(SessionMetadata metadata) { if(metadata.Id!=Metadata.Id)throw new ArgumentException("Session identity cannot change.",nameof(metadata));Metadata=metadata;TitleText.Text=metadata.DisplayName;SetStatus(metadata.LastStatus); }
-    // Minimal single-line terminal discipline: interprets carriage return, backspace, tab,
-    // cursor left/right/column, erase-line, window-title (OSC) and screen-clear so ordinary shell
-    // editing, prompts and progress render in place instead of accumulating as raw escape noise.
-    // This is deliberately NOT a full 2D cursor-addressed emulator, so alternate-screen TUIs are
-    // still only approximated.
+
+    // Feed raw terminal output into the VT emulator, then coalesce redraws so a burst of output
+    // paints once. The emulator owns the 2-D screen; this view only renders its current snapshot.
     public void Append(string output)
     {
-        var sb = new StringBuilder(OutputText.Text);
-        RenderInto(sb, output);
-        var rendered = BlankLineRunPattern.Replace(sb.ToString(), "\n\n");
-        if (rendered.Length > MaximumOutputCharacters) rendered = rendered[^MaximumOutputCharacters..];
-        OutputText.Text = rendered;
-        if (IsSearchOpen) RefreshSearch();
-        else { OutputScroll.UpdateLayout(); OutputScroll.ChangeView(null, OutputScroll.ScrollableHeight, null, true); }
+        _emulator.Process(output);
+        ScheduleRender();
     }
 
-    private static void RenderInto(StringBuilder sb, string s)
+    public void ClearOutput() { _emulator.Reset(); RenderTerminal(); }
+    public void FocusInput() => InputText.Focus(FocusState.Programmatic);
+    public void RestoreFocus() { if (IsSearchOpen) SearchText.Focus(FocusState.Programmatic); else FocusInput(); }
+    public void OpenSearch() { SearchPanel.Visibility = Visibility.Visible; _currentSearchMatch = 0; RenderTerminal(); SearchText.Focus(FocusState.Programmatic); SearchText.SelectAll(); }
+    public void MoveToNextMatch() => MoveSearch(1);
+    public void MoveToPreviousMatch() => MoveSearch(-1);
+
+    private void CloseSearch() { SearchPanel.Visibility = Visibility.Collapsed; RenderTerminal(); FocusInput(); }
+    private void RefreshSearch() { _currentSearchMatch = 0; RenderTerminal(); }
+    private void MoveSearch(int offset) { if (_searchMatches.Count == 0) return; _currentSearchMatch = TerminalSearch.Move(_searchMatches.Count, _currentSearchMatch, offset); RenderTerminal(); }
+
+    private void ScheduleRender()
     {
-        int lineStart = LastLineStart(sb);
-        int col = sb.Length - lineStart;
-        int i = 0;
-        while (i < s.Length)
+        if (_renderScheduled) return;
+        _renderScheduled = true;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => { _renderScheduled = false; RenderTerminal(); });
+    }
+
+    private void RenderTerminal()
+    {
+        EnsureCellMetrics();
+        var snapshot = _emulator.Snapshot();
+        var lines = snapshot.Lines;
+        var total = lines.Count;
+        var start = Math.Max(0, total - MaxRenderedLines);
+        var columns = snapshot.Columns;
+        _snapshotColumns = columns;
+
+        var baseFg = ThemeBrush("PrimaryTextBrush").Color;
+        var baseBg = ThemeBrush("TerminalBackgroundBrush").Color;
+
+        var text = new StringBuilder();
+        var groups = new Dictionary<(uint Fg, uint Bg), TextHighlighter>();
+        var index = 0;
+        for (var r = start; r < total; r++)
         {
-            char c = s[i];
-            switch (c)
+            var cells = lines[r];
+            var runStart = -1;
+            (uint Fg, uint Bg) runKey = default;
+            for (var c = 0; c < columns; c++)
             {
-                case '\x1b': i = HandleEscape(sb, s, i, ref lineStart, ref col); continue;
-                case '\n': sb.Append('\n'); lineStart = sb.Length; col = 0; break;
-                case '\r': col = 0; break;
-                case '\b': if (col > 0) col--; break;
-                case '\t': { int adv = 8 - (col % 8); for (int k = 0; k < adv; k++) WriteChar(sb, lineStart, ref col, ' '); break; }
-                default:
-                    if (c < 0x20) break; // drop bell and other C0 control characters
-                    WriteChar(sb, lineStart, ref col, c);
-                    break;
+                var cell = c < cells.Length ? cells[c] : VtCell.Blank;
+                var glyph = cell.Glyph;
+                text.Append(glyph < ' ' ? ' ' : glyph);
+                var (fg, bg, isDefault) = Effective(cell, baseFg, baseBg);
+                if (isDefault)
+                {
+                    if (runStart >= 0) { AddRange(groups, runKey, runStart, index - runStart); runStart = -1; }
+                }
+                else if (runStart >= 0 && runKey.Fg == fg && runKey.Bg == bg)
+                {
+                    // extend current run
+                }
+                else
+                {
+                    if (runStart >= 0) AddRange(groups, runKey, runStart, index - runStart);
+                    runStart = index;
+                    runKey = (fg, bg);
+                }
+                index++;
             }
-            i++;
+            if (runStart >= 0) AddRange(groups, runKey, runStart, index - runStart);
+            if (r < total - 1) { text.Append('\n'); index++; }
         }
-    }
 
-    private static int LastLineStart(StringBuilder sb)
-    {
-        for (int k = sb.Length - 1; k >= 0; k--) if (sb[k] == '\n') return k + 1;
-        return 0;
-    }
-
-    private static void WriteChar(StringBuilder sb, int lineStart, ref int col, char c)
-    {
-        int pos = lineStart + col;
-        if (pos < sb.Length) sb[pos] = c;
-        else { while (sb.Length < pos) sb.Append(' '); sb.Append(c); }
-        col++;
-    }
-
-    private static int HandleEscape(StringBuilder sb, string s, int i, ref int lineStart, ref int col)
-    {
-        if (i + 1 >= s.Length) return i + 1;
-        char n = s[i + 1];
-        if (n == '[')
-        {
-            int j = i + 2;
-            while (j < s.Length && s[j] >= 0x20 && s[j] <= 0x3f) j++;
-            if (j >= s.Length) return s.Length;
-            HandleCsi(sb, s.Substring(i + 2, j - (i + 2)), s[j], ref lineStart, ref col);
-            return j + 1;
-        }
-        if (n == ']') // OSC (e.g. window title) terminated by BEL or ST
-        {
-            int j = i + 2;
-            while (j < s.Length && s[j] != '\a' && !(s[j] == '\x1b' && j + 1 < s.Length && s[j + 1] == '\\')) j++;
-            if (j >= s.Length) return s.Length;
-            return s[j] == '\a' ? j + 1 : j + 2;
-        }
-        if (n == 'c') { sb.Clear(); lineStart = 0; col = 0; return i + 2; } // full reset
-        if (n is '(' or ')' or '*' or '+') return i + 3; // charset designation
-        return i + 2;
-    }
-
-    private static void HandleCsi(StringBuilder sb, string param, char final, ref int lineStart, ref int col)
-    {
-        int First(int def)
-        {
-            var head = param.Split(';')[0];
-            return int.TryParse(head, out var v) ? v : def;
-        }
-        switch (final)
-        {
-            case 'D': col = Math.Max(0, col - Math.Max(1, First(1))); break;
-            case 'C': col += Math.Max(1, First(1)); break;
-            case 'G': col = Math.Max(0, First(1) - 1); break;
-            case 'H': case 'f':
-            {
-                var parts = param.Split(';');
-                col = parts.Length >= 2 && int.TryParse(parts[1], out var c2) ? Math.Max(0, c2 - 1) : 0;
-                break;
-            }
-            case 'K':
-            {
-                int mode = First(0);
-                if (mode == 0) { if (lineStart + col < sb.Length) sb.Length = lineStart + col; }
-                else if (mode == 2) sb.Length = lineStart;
-                else for (int k = 0; k < col && lineStart + k < sb.Length; k++) sb[lineStart + k] = ' ';
-                break;
-            }
-            case 'J':
-                if (First(0) is 2 or 3) { sb.Clear(); lineStart = 0; col = 0; }
-                break;
-            case 'h': case 'l':
-                if (param.StartsWith("?") && param.Contains("1049")) { sb.Clear(); lineStart = 0; col = 0; }
-                break;
-        }
-    }
-    public void ClearOutput() { OutputText.Text=string.Empty; RefreshSearch(); }
-    public void FocusInput()=>InputText.Focus(FocusState.Programmatic);
-    public void RestoreFocus() { if(IsSearchOpen) SearchText.Focus(FocusState.Programmatic); else FocusInput(); }
-    public void OpenSearch() { SearchPanel.Visibility=Visibility.Visible;RefreshSearch();SearchText.Focus(FocusState.Programmatic);SearchText.SelectAll(); }
-    public void MoveToNextMatch()=>MoveSearch(1);
-    public void MoveToPreviousMatch()=>MoveSearch(-1);
-    private void CloseSearch() { SearchPanel.Visibility=Visibility.Collapsed;OutputText.TextHighlighters.Clear();FocusInput(); }
-    private void RefreshSearch() { _searchMatches=TerminalSearch.FindMatches(OutputText.Text,SearchText.Text);_currentSearchMatch=TerminalSearch.Move(_searchMatches.Count,-1,1);RenderSearch(); }
-    private void MoveSearch(int offset) { _currentSearchMatch=TerminalSearch.Move(_searchMatches.Count,_currentSearchMatch,offset);RenderSearch(); }
-    private void RenderSearch()
-    {
+        _snapshotText = text.ToString();
+        OutputText.Foreground = new SolidColorBrush(baseFg);
+        OutputText.Text = _snapshotText;
         OutputText.TextHighlighters.Clear();
-        if(_searchMatches.Count==0){SearchResultText.Text=string.IsNullOrEmpty(SearchText.Text)?string.Empty:"No matches";return;}
-        var matches=new TextHighlighter { Background=ThemeBrush("SearchMatchBrush") };
-        foreach(var start in _searchMatches)matches.Ranges.Add(new TextRange { StartIndex=start,Length=SearchText.Text.Length });
-        OutputText.TextHighlighters.Add(matches);
-        var current=new TextHighlighter { Background=ThemeBrush("SearchCurrentBrush") };
-        current.Ranges.Add(new TextRange { StartIndex=_searchMatches[_currentSearchMatch],Length=SearchText.Text.Length });OutputText.TextHighlighters.Add(current);
-        SearchResultText.Text=$"{_currentSearchMatch+1} of {_searchMatches.Count}";
-        var line=OutputText.Text.AsSpan(0,_searchMatches[_currentSearchMatch]).Count('\n');OutputScroll.UpdateLayout();OutputScroll.ChangeView(null,Math.Max(0,line*18-36),null,true);
+        foreach (var highlighter in groups.Values) OutputText.TextHighlighters.Add(highlighter);
+
+        ApplySearchHighlights();
+        DrawCursor(snapshot, start);
+
+        if (IsSearchOpen && _currentSearchMatch >= 0 && _currentSearchMatch < _searchMatches.Count)
+            ScrollToIndex(_searchMatches[_currentSearchMatch]);
+        else if (!_emulator.IsAlternateScreen)
+        {
+            OutputScroll.UpdateLayout();
+            OutputScroll.ChangeView(null, OutputScroll.ScrollableHeight, null, true);
+        }
     }
+
+    private void ApplySearchHighlights()
+    {
+        if (!IsSearchOpen || SearchText.Text.Length == 0)
+        {
+            _searchMatches = [];
+            SearchResultText.Text = string.Empty;
+            return;
+        }
+        _searchMatches = TerminalSearch.FindMatches(_snapshotText, SearchText.Text);
+        if (_searchMatches.Count == 0) { _currentSearchMatch = -1; SearchResultText.Text = "No matches"; return; }
+        _currentSearchMatch = Math.Clamp(_currentSearchMatch, 0, _searchMatches.Count - 1);
+        var all = new TextHighlighter { Background = ThemeBrush("SearchMatchBrush") };
+        foreach (var s in _searchMatches) all.Ranges.Add(new TextRange { StartIndex = s, Length = SearchText.Text.Length });
+        OutputText.TextHighlighters.Add(all);
+        var current = new TextHighlighter { Background = ThemeBrush("SearchCurrentBrush") };
+        current.Ranges.Add(new TextRange { StartIndex = _searchMatches[_currentSearchMatch], Length = SearchText.Text.Length });
+        OutputText.TextHighlighters.Add(current);
+        SearchResultText.Text = $"{_currentSearchMatch + 1} of {_searchMatches.Count}";
+    }
+
+    private void DrawCursor(VtSnapshot snapshot, int start)
+    {
+        CursorLayer.Children.Clear();
+        var row = snapshot.CursorRow - start;
+        if (!snapshot.CursorVisible || row < 0) return;
+        var cursor = new Rectangle
+        {
+            Width = Math.Max(2, _cellWidth),
+            Height = _cellHeight,
+            Fill = new SolidColorBrush(ThemeBrush("PrimaryTextBrush").Color),
+            Opacity = 0.45,
+        };
+        Canvas.SetLeft(cursor, snapshot.CursorColumn * _cellWidth);
+        Canvas.SetTop(cursor, row * _cellHeight);
+        CursorLayer.Children.Add(cursor);
+    }
+
+    private void ScrollToIndex(int charIndex)
+    {
+        var row = charIndex / (_snapshotColumns + 1);
+        OutputScroll.UpdateLayout();
+        OutputScroll.ChangeView(null, Math.Max(0, row * _cellHeight - _cellHeight * 3), null, true);
+    }
+
+    private void OutputScroll_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        EnsureCellMetrics();
+        var w = OutputScroll.ViewportWidth > 0 ? OutputScroll.ViewportWidth : e.NewSize.Width - 16;
+        var h = OutputScroll.ViewportHeight > 0 ? OutputScroll.ViewportHeight : e.NewSize.Height - 4;
+        if (w <= 0 || h <= 0) return;
+        var cols = Math.Clamp((int)(w / _cellWidth), 20, 400);
+        var rows = Math.Clamp((int)(h / _cellHeight), 5, 200);
+        if (cols == _emulator.Columns && rows == _emulator.Rows) return;
+        _emulator.Resize(cols, rows);
+        ResizeRequested?.Invoke(this, new TerminalSize((short)cols, (short)rows));
+        ScheduleRender();
+    }
+
+    private void EnsureCellMetrics()
+    {
+        if (_metricsMeasured) return;
+        var probe = new TextBlock { FontFamily = MonoFont, FontSize = TerminalFontSize, Text = new string('M', 20) };
+        probe.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+        var w = probe.DesiredSize.Width / 20.0;
+        var h = probe.DesiredSize.Height;
+        if (w > 1 && h > 1) { _cellWidth = w; _cellHeight = h; _metricsMeasured = true; }
+    }
+
+    private static void AddRange(Dictionary<(uint Fg, uint Bg), TextHighlighter> groups, (uint Fg, uint Bg) key, int start, int length)
+    {
+        if (!groups.TryGetValue(key, out var highlighter))
+        {
+            highlighter = new TextHighlighter { Foreground = new SolidColorBrush(FromArgb(key.Fg)), Background = new SolidColorBrush(FromArgb(key.Bg)) };
+            groups[key] = highlighter;
+        }
+        highlighter.Ranges.Add(new TextRange { StartIndex = start, Length = length });
+    }
+
+    private static (uint Fg, uint Bg, bool IsDefault) Effective(VtCell cell, Color baseFg, Color baseBg)
+    {
+        var fg = cell.Foreground;
+        var bg = cell.Background;
+        var bold = (cell.Attributes & VtCellAttributes.Bold) != 0;
+        if (bold && fg.Kind == VtColorKind.Indexed && fg.Index < 8) fg = VtColor.Indexed(fg.Index + 8);
+
+        var fgDefault = fg.Kind == VtColorKind.Default;
+        var bgDefault = bg.Kind == VtColorKind.Default;
+        var fgColor = fgDefault ? baseFg : MapColor(fg);
+        var bgColor = bgDefault ? baseBg : MapColor(bg);
+
+        if ((cell.Attributes & VtCellAttributes.Reverse) != 0)
+        {
+            (fgColor, bgColor) = (bgColor, fgColor);
+            (fgDefault, bgDefault) = (bgDefault, fgDefault);
+        }
+
+        return (ToArgb(fgColor), ToArgb(bgColor), fgDefault && bgDefault);
+    }
+
+    private static uint ToArgb(Color c) => ((uint)c.A << 24) | ((uint)c.R << 16) | ((uint)c.G << 8) | c.B;
+    private static Color FromArgb(uint v) => Color.FromArgb((byte)(v >> 24), (byte)(v >> 16), (byte)(v >> 8), (byte)v);
+
+    private static Color MapColor(VtColor color) => color.Kind switch
+    {
+        VtColorKind.Rgb => Color.FromArgb(255, color.R, color.G, color.B),
+        VtColorKind.Indexed => PaletteColor(color.Index),
+        _ => Color.FromArgb(255, 204, 204, 204),
+    };
+
+    private static readonly Color[] Ansi16 =
+    {
+        Color.FromArgb(255, 0x0C, 0x0C, 0x0C), Color.FromArgb(255, 0xC5, 0x0F, 0x1F),
+        Color.FromArgb(255, 0x13, 0xA1, 0x0E), Color.FromArgb(255, 0xC1, 0x9C, 0x00),
+        Color.FromArgb(255, 0x00, 0x37, 0xDA), Color.FromArgb(255, 0x88, 0x17, 0x98),
+        Color.FromArgb(255, 0x3A, 0x96, 0xDD), Color.FromArgb(255, 0xCC, 0xCC, 0xCC),
+        Color.FromArgb(255, 0x76, 0x76, 0x76), Color.FromArgb(255, 0xE7, 0x48, 0x56),
+        Color.FromArgb(255, 0x16, 0xC6, 0x0C), Color.FromArgb(255, 0xF9, 0xF1, 0xA5),
+        Color.FromArgb(255, 0x3B, 0x78, 0xFF), Color.FromArgb(255, 0xB4, 0x00, 0x9E),
+        Color.FromArgb(255, 0x61, 0xD6, 0xD6), Color.FromArgb(255, 0xF2, 0xF2, 0xF2),
+    };
+
+    private static Color PaletteColor(int index)
+    {
+        if (index < 16) return Ansi16[Math.Clamp(index, 0, 15)];
+        if (index <= 231)
+        {
+            var n = index - 16;
+            var r = n / 36; var g = n / 6 % 6; var b = n % 6;
+            return Color.FromArgb(255, Cube(r), Cube(g), Cube(b));
+        }
+        var level = (byte)Math.Clamp(8 + (index - 232) * 10, 0, 255);
+        return Color.FromArgb(255, level, level, level);
+    }
+
+    private static byte Cube(int v) => (byte)(v == 0 ? 0 : 55 + 40 * v);
+
     private void StartButton_Click(object sender,RoutedEventArgs e)=>StartRequested?.Invoke(this,EventArgs.Empty);
     private void StopButton_Click(object sender,RoutedEventArgs e)=>StopRequested?.Invoke(this,EventArgs.Empty);
     private void ClearButton_Click(object sender,RoutedEventArgs e){ClearOutput();FocusInput();}
     private void PowerShellButton_Click(object sender,RoutedEventArgs e)=>PowerShellRequested?.Invoke(this,EventArgs.Empty);
     private void CodexButton_Click(object sender,RoutedEventArgs e)=>CodexRequested?.Invoke(this,EventArgs.Empty);
     private void DemoAlertButton_Click(object sender,RoutedEventArgs e)=>DemoAlertRequested?.Invoke(this,EventArgs.Empty);
+
     // Printable characters typed into the box are relayed live to the shell, then the box is
     // cleared so the shell's own echo (in the output view) is the single source of truth.
     private async void InputText_TextChanged(object sender,TextChangedEventArgs e)
@@ -182,6 +301,7 @@ public sealed partial class TerminalSessionView : UserControl
         PartialInputChanged?.Invoke(this,EventArgs.Empty);
         if(typed.Length>0&&!InputText.IsReadOnly&&SendKeysAsync is {} send)await send(typed);
     }
+
     // Control and navigation keys are translated to their terminal byte sequences and forwarded live.
     private async void InputText_KeyDown(object sender,KeyRoutedEventArgs e)
     {
@@ -191,6 +311,7 @@ public sealed partial class TerminalSessionView : UserControl
         e.Handled=true;
         if(SendKeysAsync is {} send)await send(sequence);
     }
+
     private static string? TranslateKey(VirtualKey key)
     {
         if(IsControlDown()&&key>=VirtualKey.A&&key<=VirtualKey.Z)return ((char)(key-VirtualKey.A+1)).ToString();
@@ -212,13 +333,15 @@ public sealed partial class TerminalSessionView : UserControl
             _=>null,
         };
     }
+
     private static bool IsControlDown()=>
         Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+
     private void SearchText_TextChanged(object sender,TextChangedEventArgs e)=>RefreshSearch();
     private void SearchText_KeyDown(object sender,KeyRoutedEventArgs e){if(e.Key==VirtualKey.Enter){e.Handled=true;MoveToNextMatch();}else if(e.Key==VirtualKey.Escape){e.Handled=true;CloseSearch();}}
     private void PreviousSearchButton_Click(object sender,RoutedEventArgs e)=>MoveToPreviousMatch();
     private void NextSearchButton_Click(object sender,RoutedEventArgs e)=>MoveToNextMatch();
     private void CloseSearchButton_Click(object sender,RoutedEventArgs e)=>CloseSearch();
-    private void Panel_SizeChanged(object sender,SizeChangedEventArgs e)=>ResizeRequested?.Invoke(this,new TerminalSize((short)Math.Clamp((int)(Panel.ActualWidth/8),20,240),(short)Math.Clamp((int)(Panel.ActualHeight/18),5,100)));
+
     private static SolidColorBrush ThemeBrush(string key)=>(SolidColorBrush)Application.Current.Resources[key];
 }

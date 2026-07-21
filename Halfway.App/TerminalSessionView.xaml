@@ -7,8 +7,7 @@
             BorderBrush="{ThemeResource BorderBrush}"
             BorderThickness="1"
             CornerRadius="{StaticResource SurfaceCornerRadius}"
-            Padding="14,12,14,12"
-            SizeChanged="Panel_SizeChanged">
+            Padding="14,12,14,12">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
@@ -62,9 +61,12 @@
                 </Grid>
             </Border>
 
-            <!-- Terminal output -->
-            <ScrollViewer x:Name="OutputScroll" Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
-                <TextBlock x:Name="OutputText" TextWrapping="NoWrap" FontFamily="Cascadia Mono, Consolas" FontSize="13" Foreground="{ThemeResource PrimaryTextBrush}" IsTextSelectionEnabled="True"/>
+            <!-- Terminal output: an emulated VT screen rendered as a monospace grid -->
+            <ScrollViewer x:Name="OutputScroll" Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" SizeChanged="OutputScroll_SizeChanged">
+                <Grid>
+                    <TextBlock x:Name="OutputText" TextWrapping="NoWrap" FontFamily="Cascadia Mono, Consolas" FontSize="14" LineStackingStrategy="BlockLineHeight" Foreground="{ThemeResource PrimaryTextBrush}" IsTextSelectionEnabled="True"/>
+                    <Canvas x:Name="CursorLayer" IsHitTestVisible="False"/>
+                </Grid>
             </ScrollViewer>
 
             <!-- Terminal input -->
