@@ -35,6 +35,7 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <Button x:Name="StartButton" Content="Start" Style="{StaticResource PrimaryButtonStyle}" Click="StartButton_Click"/>
                     <Button x:Name="StopButton" Content="Stop" Style="{StaticResource SubtleButtonStyle}" Click="StopButton_Click" IsEnabled="False"/>
+                    <Button x:Name="ClearButton" Content="Clear" Style="{StaticResource SubtleButtonStyle}" Click="ClearButton_Click"/>
                     <Button x:Name="PowerShellButton" Content="PowerShell" Style="{StaticResource SubtleButtonStyle}" Click="PowerShellButton_Click" Visibility="Collapsed"/>
                     <Button x:Name="CodexButton" Content="Codex" Style="{StaticResource SubtleButtonStyle}" Click="CodexButton_Click" Visibility="Collapsed"/>
                     <Button x:Name="DemoAlertButton" Content="Inject demo alert" Style="{StaticResource SubtleButtonStyle}" Click="DemoAlertButton_Click" Visibility="Collapsed"/>
