@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using Halfway.Core;
 using Halfway.Terminal;
@@ -13,8 +14,6 @@ namespace Halfway.App;
 public sealed partial class TerminalSessionView : UserControl
 {
     private const int MaximumOutputCharacters = 64 * 1024;
-    private static readonly Regex AnsiEscapePattern = new("\\x1B(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])", RegexOptions.Compiled);
-    private static readonly Regex ScreenClearPattern = new("\\x1B(?:c|\\[[23]J|\\[\\?1049[hl])", RegexOptions.Compiled);
     private static readonly Regex BlankLineRunPattern = new("\\n{3,}", RegexOptions.Compiled);
     private IReadOnlyList<int> _searchMatches = [];
     private int _currentSearchMatch = -1;
@@ -34,29 +33,117 @@ public sealed partial class TerminalSessionView : UserControl
     public event EventHandler<TerminalSize>? ResizeRequested;
     public void SetStatus(AgentStatus status) { var brush=ThemeBrush(StatusPresentation.ColorKey(status));StatusText.Text=status.ToString().ToUpperInvariant();StatusText.Foreground=brush;StatusDot.Fill=brush;var active=status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting; StartButton.IsEnabled=!active; StartButton.Content=status == AgentStatus.Disconnected ? "Restart" : "Start"; StopButton.IsEnabled=active; InputText.IsReadOnly=status is not (AgentStatus.Running or AgentStatus.Waiting); }
     public void UpdateMetadata(SessionMetadata metadata) { if(metadata.Id!=Metadata.Id)throw new ArgumentException("Session identity cannot change.",nameof(metadata));Metadata=metadata;TitleText.Text=metadata.DisplayName;SetStatus(metadata.LastStatus); }
+    // Minimal single-line terminal discipline: interprets carriage return, backspace, tab,
+    // cursor left/right/column, erase-line, window-title (OSC) and screen-clear so ordinary shell
+    // editing, prompts and progress render in place instead of accumulating as raw escape noise.
+    // This is deliberately NOT a full 2D cursor-addressed emulator, so alternate-screen TUIs are
+    // still only approximated.
     public void Append(string output)
     {
-        // A full-screen clear or alternate-screen switch means the shell is repainting, so reset the
-        // view to that point instead of stacking every frame. (This is a bounded view, not an emulator.)
-        var clears = ScreenClearPattern.Matches(output);
-        if (clears.Count > 0)
-        {
-            OutputText.Text = string.Empty;
-            var last = clears[^1];
-            output = output[(last.Index + last.Length)..];
-        }
-        var plain = AnsiEscapePattern.Replace(output, string.Empty);
-        if (plain.Length == 0)
-        {
-            if (clears.Count > 0 && !IsSearchOpen) { OutputScroll.UpdateLayout(); OutputScroll.ChangeView(null, OutputScroll.ScrollableHeight, null, true); }
-            else if (clears.Count > 0) RefreshSearch();
-            return;
-        }
-        var marked = string.IsNullOrWhiteSpace(plain) ? plain : "- " + plain;
-        var combined = BlankLineRunPattern.Replace(OutputText.Text + marked, "\n\n");
-        OutputText.Text = combined.Length <= MaximumOutputCharacters ? combined : combined[^MaximumOutputCharacters..];
+        var sb = new StringBuilder(OutputText.Text);
+        RenderInto(sb, output);
+        var rendered = BlankLineRunPattern.Replace(sb.ToString(), "\n\n");
+        if (rendered.Length > MaximumOutputCharacters) rendered = rendered[^MaximumOutputCharacters..];
+        OutputText.Text = rendered;
         if (IsSearchOpen) RefreshSearch();
         else { OutputScroll.UpdateLayout(); OutputScroll.ChangeView(null, OutputScroll.ScrollableHeight, null, true); }
+    }
+
+    private static void RenderInto(StringBuilder sb, string s)
+    {
+        int lineStart = LastLineStart(sb);
+        int col = sb.Length - lineStart;
+        int i = 0;
+        while (i < s.Length)
+        {
+            char c = s[i];
+            switch (c)
+            {
+                case '\x1b': i = HandleEscape(sb, s, i, ref lineStart, ref col); continue;
+                case '\n': sb.Append('\n'); lineStart = sb.Length; col = 0; break;
+                case '\r': col = 0; break;
+                case '\b': if (col > 0) col--; break;
+                case '\t': { int adv = 8 - (col % 8); for (int k = 0; k < adv; k++) WriteChar(sb, lineStart, ref col, ' '); break; }
+                default:
+                    if (c < 0x20) break; // drop bell and other C0 control characters
+                    WriteChar(sb, lineStart, ref col, c);
+                    break;
+            }
+            i++;
+        }
+    }
+
+    private static int LastLineStart(StringBuilder sb)
+    {
+        for (int k = sb.Length - 1; k >= 0; k--) if (sb[k] == '\n') return k + 1;
+        return 0;
+    }
+
+    private static void WriteChar(StringBuilder sb, int lineStart, ref int col, char c)
+    {
+        int pos = lineStart + col;
+        if (pos < sb.Length) sb[pos] = c;
+        else { while (sb.Length < pos) sb.Append(' '); sb.Append(c); }
+        col++;
+    }
+
+    private static int HandleEscape(StringBuilder sb, string s, int i, ref int lineStart, ref int col)
+    {
+        if (i + 1 >= s.Length) return i + 1;
+        char n = s[i + 1];
+        if (n == '[')
+        {
+            int j = i + 2;
+            while (j < s.Length && s[j] >= 0x20 && s[j] <= 0x3f) j++;
+            if (j >= s.Length) return s.Length;
+            HandleCsi(sb, s.Substring(i + 2, j - (i + 2)), s[j], ref lineStart, ref col);
+            return j + 1;
+        }
+        if (n == ']') // OSC (e.g. window title) terminated by BEL or ST
+        {
+            int j = i + 2;
+            while (j < s.Length && s[j] != '\a' && !(s[j] == '\x1b' && j + 1 < s.Length && s[j + 1] == '\\')) j++;
+            if (j >= s.Length) return s.Length;
+            return s[j] == '\a' ? j + 1 : j + 2;
+        }
+        if (n == 'c') { sb.Clear(); lineStart = 0; col = 0; return i + 2; } // full reset
+        if (n is '(' or ')' or '*' or '+') return i + 3; // charset designation
+        return i + 2;
+    }
+
+    private static void HandleCsi(StringBuilder sb, string param, char final, ref int lineStart, ref int col)
+    {
+        int First(int def)
+        {
+            var head = param.Split(';')[0];
+            return int.TryParse(head, out var v) ? v : def;
+        }
+        switch (final)
+        {
+            case 'D': col = Math.Max(0, col - Math.Max(1, First(1))); break;
+            case 'C': col += Math.Max(1, First(1)); break;
+            case 'G': col = Math.Max(0, First(1) - 1); break;
+            case 'H': case 'f':
+            {
+                var parts = param.Split(';');
+                col = parts.Length >= 2 && int.TryParse(parts[1], out var c2) ? Math.Max(0, c2 - 1) : 0;
+                break;
+            }
+            case 'K':
+            {
+                int mode = First(0);
+                if (mode == 0) { if (lineStart + col < sb.Length) sb.Length = lineStart + col; }
+                else if (mode == 2) sb.Length = lineStart;
+                else for (int k = 0; k < col && lineStart + k < sb.Length; k++) sb[lineStart + k] = ' ';
+                break;
+            }
+            case 'J':
+                if (First(0) is 2 or 3) { sb.Clear(); lineStart = 0; col = 0; }
+                break;
+            case 'h': case 'l':
+                if (param.StartsWith("?") && param.Contains("1049")) { sb.Clear(); lineStart = 0; col = 0; }
+                break;
+        }
     }
     public void ClearOutput() { OutputText.Text=string.Empty; RefreshSearch(); }
     public void FocusInput()=>InputText.Focus(FocusState.Programmatic);
