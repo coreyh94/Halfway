@@ -67,7 +67,7 @@
             </ScrollViewer>
 
             <!-- Terminal input -->
-            <TextBox x:Name="InputText" Grid.Row="3" Style="{StaticResource TerminalInputStyle}" Margin="0,10,0,0" PlaceholderText="Type a command and press Enter" KeyDown="InputText_KeyDown" TextChanged="InputText_TextChanged"/>
+            <TextBox x:Name="InputText" Grid.Row="3" Style="{StaticResource TerminalInputStyle}" Margin="0,10,0,0" PlaceholderText="Type here — keystrokes go to the terminal" KeyDown="InputText_KeyDown" TextChanged="InputText_TextChanged"/>
         </Grid>
     </Border>
 </UserControl>

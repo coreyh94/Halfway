@@ -131,6 +131,9 @@ public sealed partial class MainWindow : Window, IWorkspaceSwitchAdapter
         view.SubmitInputAsync = input => _activation.IsCurrent(activation)
             ? AcceptInputAsync(view, view.Metadata, input)
             : Task.FromResult(TerminalInputAcceptance.RejectedSubmission);
+        view.SendKeysAsync = data => _activation.IsCurrent(activation)
+            ? SendKeysToSessionAsync(view.Metadata, data)
+            : Task.CompletedTask;
         view.ResizeRequested += (_, size) => { if (!_activation.IsCurrent(activation)) return; try { _coordinator.Resize(view.Metadata.SessionKey, size); } catch (KeyNotFoundException) { } };
         if (view.Metadata.Kind == AgentKind.Primary) view.PartialInputChanged += (_, _) => { if (_activation.IsCurrent(activation)) _alerts.SetUserInput(view.PartialInput); };
     }
@@ -178,6 +181,12 @@ public sealed partial class MainWindow : Window, IWorkspaceSwitchAdapter
     {
         try { await _coordinator.StopAsync(metadata.SessionKey); _diagnostics.Record("session", "stopped", DateTimeOffset.UtcNow, new Dictionary<string, string> { ["sessionId"] = metadata.Id.ToString(), ["outcome"] = "disconnected" }); }
         catch (Exception exception) { RecordFailure("session", "stop-failed", exception, metadata.Id); _views[metadata.Id].Append($"\n[Stop failed: {exception.Message}]\n"); }
+    }
+
+    private async Task SendKeysToSessionAsync(SessionMetadata metadata, string data)
+    {
+        try { await _coordinator.WriteAsync(metadata.SessionKey, data); }
+        catch (Exception) { /* Keystrokes are best-effort; a stopped or replaced session simply ignores them. */ }
     }
 
     private Task<TerminalInputAcceptance> AcceptInputAsync(TerminalSessionView view, SessionMetadata metadata, string input)
