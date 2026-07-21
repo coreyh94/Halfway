@@ -135,7 +135,6 @@ public sealed partial class MainWindow : Window, IWorkspaceSwitchAdapter
             ? SendKeysToSessionAsync(view.Metadata, data)
             : Task.CompletedTask;
         view.ResizeRequested += (_, size) => { if (!_activation.IsCurrent(activation)) return; try { _coordinator.Resize(view.Metadata.SessionKey, size); } catch (KeyNotFoundException) { } };
-        if (view.Metadata.Kind == AgentKind.Primary) view.PartialInputChanged += (_, _) => { if (_activation.IsCurrent(activation)) _alerts.SetUserInput(view.PartialInput); };
     }
 
     private async Task StartSessionAsync(SessionMetadata metadata)

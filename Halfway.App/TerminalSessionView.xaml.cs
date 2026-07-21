@@ -7,7 +7,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Shapes;
 using Windows.System;
 using Windows.UI;
 
@@ -29,7 +28,7 @@ public sealed partial class TerminalSessionView : UserControl
 
     private IReadOnlyList<int> _searchMatches = [];
     private int _currentSearchMatch = -1;
-    private bool _relayingInput;
+    private bool _inputEnabled;
 
     public TerminalSessionView(SessionMetadata metadata)
     {
@@ -42,11 +41,10 @@ public sealed partial class TerminalSessionView : UserControl
     }
 
     public SessionMetadata Metadata { get; private set; }
-    public string PartialInput => InputText.Text;
+    public string PartialInput => string.Empty;
     public bool IsSearchOpen => SearchPanel.Visibility == Visibility.Visible;
     public Func<string, Task<TerminalInputAcceptance>>? SubmitInputAsync { get; set; }
     public Func<string, Task>? SendKeysAsync { get; set; }
-    public event EventHandler? PartialInputChanged;
     public event EventHandler? StartRequested;
     public event EventHandler? StopRequested;
     public event EventHandler? PowerShellRequested;
@@ -54,7 +52,7 @@ public sealed partial class TerminalSessionView : UserControl
     public event EventHandler? DemoAlertRequested;
     public event EventHandler<TerminalSize>? ResizeRequested;
 
-    public void SetStatus(AgentStatus status) { var brush=ThemeBrush(StatusPresentation.ColorKey(status));StatusText.Text=status.ToString().ToUpperInvariant();StatusText.Foreground=brush;StatusDot.Fill=brush;var active=status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting; StartButton.IsEnabled=!active; StartButton.Content=status == AgentStatus.Disconnected ? "Restart" : "Start"; StopButton.IsEnabled=active; InputText.IsReadOnly=status is not (AgentStatus.Running or AgentStatus.Waiting); }
+    public void SetStatus(AgentStatus status) { var brush=ThemeBrush(StatusPresentation.ColorKey(status));StatusText.Text=status.ToString().ToUpperInvariant();StatusText.Foreground=brush;StatusDot.Fill=brush;var active=status is AgentStatus.Queued or AgentStatus.Running or AgentStatus.Waiting; StartButton.IsEnabled=!active; StartButton.Content=status == AgentStatus.Disconnected ? "Restart" : "Start"; StopButton.IsEnabled=active; _inputEnabled=status is AgentStatus.Running or AgentStatus.Waiting; }
     public void UpdateMetadata(SessionMetadata metadata) { if(metadata.Id!=Metadata.Id)throw new ArgumentException("Session identity cannot change.",nameof(metadata));Metadata=metadata;TitleText.Text=metadata.DisplayName;SetStatus(metadata.LastStatus); }
 
     // Feed raw terminal output into the VT emulator, then coalesce redraws so a burst of output
@@ -66,7 +64,7 @@ public sealed partial class TerminalSessionView : UserControl
     }
 
     public void ClearOutput() { _emulator.Reset(); RenderTerminal(); }
-    public void FocusInput() => InputText.Focus(FocusState.Programmatic);
+    public void FocusInput() => OutputScroll.Focus(FocusState.Programmatic);
     public void RestoreFocus() { if (IsSearchOpen) SearchText.Focus(FocusState.Programmatic); else FocusInput(); }
     public void OpenSearch() { SearchPanel.Visibility = Visibility.Visible; _currentSearchMatch = 0; RenderTerminal(); SearchText.Focus(FocusState.Programmatic); SearchText.SelectAll(); }
     public void MoveToNextMatch() => MoveSearch(1);
@@ -137,7 +135,23 @@ public sealed partial class TerminalSessionView : UserControl
         foreach (var highlighter in groups.Values) OutputText.TextHighlighters.Add(highlighter);
 
         ApplySearchHighlights();
-        DrawCursor(snapshot, start);
+
+        // The cursor is a highlight on its actual character cell, so the text engine positions it
+        // exactly — no pixel math that could drift from the rendered glyph rows.
+        if (snapshot.CursorVisible)
+        {
+            var cursorRow = snapshot.CursorRow - start;
+            if (cursorRow >= 0)
+            {
+                var cursorIndex = cursorRow * (columns + 1) + snapshot.CursorColumn;
+                if (cursorIndex >= 0 && cursorIndex < _snapshotText.Length && _snapshotText[cursorIndex] != '\n')
+                {
+                    var cursor = new TextHighlighter { Background = new SolidColorBrush(baseFg), Foreground = new SolidColorBrush(baseBg) };
+                    cursor.Ranges.Add(new TextRange { StartIndex = cursorIndex, Length = 1 });
+                    OutputText.TextHighlighters.Add(cursor);
+                }
+            }
+        }
 
         if (IsSearchOpen && _currentSearchMatch >= 0 && _currentSearchMatch < _searchMatches.Count)
             ScrollToIndex(_searchMatches[_currentSearchMatch]);
@@ -166,23 +180,6 @@ public sealed partial class TerminalSessionView : UserControl
         current.Ranges.Add(new TextRange { StartIndex = _searchMatches[_currentSearchMatch], Length = SearchText.Text.Length });
         OutputText.TextHighlighters.Add(current);
         SearchResultText.Text = $"{_currentSearchMatch + 1} of {_searchMatches.Count}";
-    }
-
-    private void DrawCursor(VtSnapshot snapshot, int start)
-    {
-        CursorLayer.Children.Clear();
-        var row = snapshot.CursorRow - start;
-        if (!snapshot.CursorVisible || row < 0) return;
-        var cursor = new Rectangle
-        {
-            Width = Math.Max(2, _cellWidth),
-            Height = _cellHeight,
-            Fill = new SolidColorBrush(ThemeBrush("PrimaryTextBrush").Color),
-            Opacity = 0.45,
-        };
-        Canvas.SetLeft(cursor, snapshot.CursorColumn * _cellWidth);
-        Canvas.SetTop(cursor, row * _cellHeight);
-        CursorLayer.Children.Add(cursor);
     }
 
     private void ScrollToIndex(int charIndex)
@@ -287,55 +284,51 @@ public sealed partial class TerminalSessionView : UserControl
     private void StartButton_Click(object sender,RoutedEventArgs e)=>StartRequested?.Invoke(this,EventArgs.Empty);
     private void StopButton_Click(object sender,RoutedEventArgs e)=>StopRequested?.Invoke(this,EventArgs.Empty);
     private void ClearButton_Click(object sender,RoutedEventArgs e){ClearOutput();FocusInput();}
+    // Clicking the terminal focuses it so keystrokes flow to the shell (the emulator's cursor on the
+    // active line is the caret).
+    private void Terminal_PointerPressed(object sender,PointerRoutedEventArgs e)=>OutputScroll.Focus(FocusState.Programmatic);
     private void PowerShellButton_Click(object sender,RoutedEventArgs e)=>PowerShellRequested?.Invoke(this,EventArgs.Empty);
     private void CodexButton_Click(object sender,RoutedEventArgs e)=>CodexRequested?.Invoke(this,EventArgs.Empty);
     private void DemoAlertButton_Click(object sender,RoutedEventArgs e)=>DemoAlertRequested?.Invoke(this,EventArgs.Empty);
 
-    // Printable characters typed into the box are relayed live to the shell, then the box is
-    // cleared so the shell's own echo (in the output view) is the single source of truth.
-    private async void InputText_TextChanged(object sender,TextChangedEventArgs e)
+    // Characters (printable, Enter, Backspace, Escape, Ctrl-combos) arrive already resolved for the
+    // keyboard layout via CharacterReceived and are forwarded straight to the shell.
+    private async void Terminal_CharacterReceived(UIElement sender,CharacterReceivedRoutedEventArgs args)
     {
-        if(_relayingInput)return;
-        var typed=InputText.Text;
-        if(typed.Length>0){_relayingInput=true;InputText.Text=string.Empty;_relayingInput=false;}
-        PartialInputChanged?.Invoke(this,EventArgs.Empty);
-        if(typed.Length>0&&!InputText.IsReadOnly&&SendKeysAsync is {} send)await send(typed);
+        if(!_inputEnabled)return;
+        var c=args.Character;
+        if(c=='\0'||c=='\t'||c==' ')return; // Tab and Space are handled in KeyDown to also suppress scroll/focus
+        args.Handled=true;
+        var text=c=='\b'?"\x7f":c.ToString(); // Backspace key -> DEL, as terminals expect
+        if(SendKeysAsync is {} send)await send(text);
     }
 
-    // Control and navigation keys are translated to their terminal byte sequences and forwarded live.
-    private async void InputText_KeyDown(object sender,KeyRoutedEventArgs e)
+    // Tab, Space and the navigation keys are forwarded here; marking them handled also stops the
+    // ScrollViewer from scrolling or moving keyboard focus off the terminal.
+    private async void Terminal_KeyDown(object sender,KeyRoutedEventArgs e)
     {
-        if(InputText.IsReadOnly)return;
-        var sequence=TranslateKey(e.Key);
+        if(!_inputEnabled)return;
+        var sequence=TranslateNavKey(e.Key);
         if(sequence is null)return;
         e.Handled=true;
         if(SendKeysAsync is {} send)await send(sequence);
     }
 
-    private static string? TranslateKey(VirtualKey key)
+    private static string? TranslateNavKey(VirtualKey key)=>key switch
     {
-        if(IsControlDown()&&key>=VirtualKey.A&&key<=VirtualKey.Z)return ((char)(key-VirtualKey.A+1)).ToString();
-        return key switch
-        {
-            VirtualKey.Enter=>"\r",
-            VirtualKey.Tab=>"\t",
-            VirtualKey.Back=>"\x7f",
-            VirtualKey.Escape=>"\x1b",
-            VirtualKey.Up=>"\x1b[A",
-            VirtualKey.Down=>"\x1b[B",
-            VirtualKey.Right=>"\x1b[C",
-            VirtualKey.Left=>"\x1b[D",
-            VirtualKey.Home=>"\x1b[H",
-            VirtualKey.End=>"\x1b[F",
-            VirtualKey.Delete=>"\x1b[3~",
-            VirtualKey.PageUp=>"\x1b[5~",
-            VirtualKey.PageDown=>"\x1b[6~",
-            _=>null,
-        };
-    }
-
-    private static bool IsControlDown()=>
-        Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+        VirtualKey.Tab=>"\t",
+        VirtualKey.Space=>" ",
+        VirtualKey.Up=>"\x1b[A",
+        VirtualKey.Down=>"\x1b[B",
+        VirtualKey.Right=>"\x1b[C",
+        VirtualKey.Left=>"\x1b[D",
+        VirtualKey.Home=>"\x1b[H",
+        VirtualKey.End=>"\x1b[F",
+        VirtualKey.Delete=>"\x1b[3~",
+        VirtualKey.PageUp=>"\x1b[5~",
+        VirtualKey.PageDown=>"\x1b[6~",
+        _=>null,
+    };
 
     private void SearchText_TextChanged(object sender,TextChangedEventArgs e)=>RefreshSearch();
     private void SearchText_KeyDown(object sender,KeyRoutedEventArgs e){if(e.Key==VirtualKey.Enter){e.Handled=true;MoveToNextMatch();}else if(e.Key==VirtualKey.Escape){e.Handled=true;CloseSearch();}}

@@ -13,7 +13,6 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <!-- Header: identity + status on the left, actions on the right -->
@@ -61,16 +60,15 @@
                 </Grid>
             </Border>
 
-            <!-- Terminal output: an emulated VT screen rendered as a monospace grid -->
-            <ScrollViewer x:Name="OutputScroll" Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" SizeChanged="OutputScroll_SizeChanged">
-                <Grid>
-                    <TextBlock x:Name="OutputText" TextWrapping="NoWrap" FontFamily="Cascadia Mono, Consolas" FontSize="14" LineStackingStrategy="BlockLineHeight" Foreground="{ThemeResource PrimaryTextBrush}" IsTextSelectionEnabled="True"/>
-                    <Canvas x:Name="CursorLayer" IsHitTestVisible="False"/>
-                </Grid>
+            <!-- Terminal output: an emulated VT screen rendered as a monospace grid. Keystrokes are -->
+            <!-- captured by a hidden focus sink, so you type directly into the terminal and the only -->
+            <!-- caret shown is the emulator's cursor on the active line. Click the area to focus it. -->
+            <ScrollViewer x:Name="OutputScroll" Grid.Row="2" IsTabStop="True" TabNavigation="Once"
+                          VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                          SizeChanged="OutputScroll_SizeChanged" PointerPressed="Terminal_PointerPressed"
+                          KeyDown="Terminal_KeyDown" CharacterReceived="Terminal_CharacterReceived">
+                <TextBlock x:Name="OutputText" TextWrapping="NoWrap" FontFamily="Cascadia Mono, Consolas" FontSize="14" Foreground="{ThemeResource PrimaryTextBrush}" IsTextSelectionEnabled="True"/>
             </ScrollViewer>
-
-            <!-- Terminal input -->
-            <TextBox x:Name="InputText" Grid.Row="3" Style="{StaticResource TerminalInputStyle}" Margin="0,10,0,0" PlaceholderText="Type here — keystrokes go to the terminal" KeyDown="InputText_KeyDown" TextChanged="InputText_TextChanged"/>
         </Grid>
     </Border>
 </UserControl>
